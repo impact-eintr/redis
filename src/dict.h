@@ -58,13 +58,13 @@ typedef struct dictht {
   // 哈希表数组 指针数组
   dictEntry **table;
 
-  // 哈希表大小 cap(map)
+  // 哈希表大小 数组的长度
   unsigned long size;
 
   // 哈希表大小掩码 用于计算索引值
   unsigned long sizemask;
 
-  // 该哈希表已有的节点数量 len(map)
+  // 该哈希表已有的节点数量 数组及其挂载的链表节点
   unsigned long used;
 } dictht;
 
@@ -141,6 +141,11 @@ typedef void(dictScanFunction)(void *privatedata, const dictEntry *de);
   do {                                                                         \
     entry->v.u64 = _val_;                                                      \
   } while (0)
+
+// 释放给定字典节点的键
+#define dictFreeKey(d, entry)                                                  \
+  if ((d)->type->keyDestructor)                                                \
+  (d)->type->keyDestructor((d)->privdata, (entry)->key)
 
 // 设置给定字典节点的键 采用复制
 #define dictSetKey(d, entry, _key_)                                            \

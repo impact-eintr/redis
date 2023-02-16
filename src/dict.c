@@ -1,6 +1,7 @@
 #include "dict.h"
 #include "zmalloc.h"
 
+#include <assert.h>
 #include <limits.h>
 #include <sys/time.h>
 #include <ctype.h>
@@ -67,19 +68,6 @@ dict *dictCreate(dictType *type, void *privDataPtr) {
   return d;
 }
 
-// 初始化hash table
-int _dictInit(dict *d, dictType *type, void *privatePtr) {
-  _dictReset(&d->ht[0]);
-  _dictReset(&d->ht[1]);
-
-  d->type = type; // 配置实现接口
-  d->privdata = privatePtr;
-  d->rehashidx = -1;
-  d->iterators = 0;
-
-  return DICT_OK;
-}
-
 /*
  * 创建一个新的哈希表，并根据字典的情况，选择以下其中一个动作来进行：
  *
@@ -103,17 +91,18 @@ int dictExpand(dict *d, unsigned long size){
 
   // 为哈希表分配空间，并将所有指针指向 NULL
   n.size = realsize;
-  n.sizemask = realsize - 1;
+  n.sizemask = realsize - 1; // readsize - 1=1111111...
   // T = O(N)
   n.table = zcalloc(realsize * sizeof(dictEntry *));
   n.used = 0;
 
-  if (d->ht[0].table == NULL) {
+  if (d->ht[0].table == NULL) { // 这是一次初始化
     // Init
     d->ht[0] = n;
-  } else {
+  } else { // 这是一次rehash
     // rehash
     d->ht[1] = n;
+    d->rehashidx = 0; // 开启 rehash
   }
 
   return DICT_OK;
@@ -130,7 +119,6 @@ int dictExpand(dict *d, unsigned long size){
  *
  * T = O(1)
  */
-
 static void _dictRehashStep(dict *d) {
   if (d->iterators == 0)
     dictRehash(d, 1);
@@ -148,6 +136,7 @@ int dictAdd(dict *d, void *key, void *val) {
 
   return DICT_OK;
 }
+
 // 尝试添加键到字典中 添加键成功了 才能设置值
 dictEntry *dictAddRaw(dict *d, void *key) {
   int index;
@@ -171,28 +160,113 @@ dictEntry *dictAddRaw(dict *d, void *key) {
 
   // 设置新节点的键
   dictSetKey(d, entry, key);
-  printf("TEST%d\n", *(int *)key);
 
   return entry;
 }
 
+// 将给定的键值对添加到字典中 如果键已经存在 那么替换 返回 0 否则返回 1
 int dictReplace(dict *d, void *key, void *val) {
+  dictEntry *entry, auxentry;
+  if (dictAdd(d, key, val) == DICT_OK) {
+    return 1;
+  }
+
+  // 尝试直接添加
+  if (dictAdd(d, key, val) == DICT_OK) {
+    return 1;
+  }
+
+  entry = dictFind(d, key);
+  // 先保存原有的值的指针
+  auxentry = *entry;
+  // 然后设置新的值
+  // T = O(1)
+  dictSetVal(d, entry, val);
+  // 然后释放旧值
+  // T = O(1)
+  dictFreeVal(d, &auxentry);
   return 0;
 }
 
+/*
+ * dictAddRaw() 根据给定 key 释放存在，执行以下动作：
+ *
+ * 1) key 已经存在，返回包含该 key 的字典节点
+ * 2) key 不存在，那么将 key 添加到字典
+ *
+ * 不论发生以上的哪一种情况，
+ * dictAddRaw() 都总是返回包含给定 key 的字典节点。
+ *
+ * T = O(N)
+ */
 dictEntry *dictReplaceRaw(dict *d, void *key) {
-  return 0;
+  dictEntry *entry = dictFind(d, key);
+  return entry ? entry : dictAddRaw(d, key);
 }
 
+static int dictGenericDelete(dict *d, const void *key, int nofree) {
+
+}
+
+// 删除key 释放value
 int dictDelete(dict *d, const void *key) {
-  return 0;
+  return dictGenericDelete(d, key, 0);
 }
 
+// 不释放 value
 int dictDeleteNoFree(dict *d, const void *key) {
-  return 0;
+  return dictGenericDelete(d, key, 1);
 }
 
-void dictRelease(dict *d) {}
+// 删除哈希表上的所有节点
+// 每65535次调用一次回调函数 用于窥视状态
+int _dictClear(dict *d, dictht *ht, void(callback)(void *)) {
+  for (unsigned long i = 0;i < ht->size && ht->used > 0;i++) {
+    dictEntry *he, *nextHe;
+
+    if (callback && (i & 65535) == 0)
+      callback(d->privdata);
+
+    // 跳过空索引
+    if ((he = ht->table[i]) == NULL)
+      continue;
+
+    // 遍历整个链表
+    // T = O(1)
+    while (he) {
+      nextHe = he->next;
+      // 删除键
+      dictFreeKey(d, he);
+      // 删除值
+      dictFreeVal(d, he);
+      // 释放节点
+      zfree(he);
+
+      // 更新已使用节点计数
+      ht->used--;
+
+      // 处理下个节点
+      he = nextHe;
+    }
+  }
+
+  // 释放哈希表结构
+  zfree(ht->table);
+
+  // 重置哈希表属性
+  _dictReset(ht);
+
+  return DICT_OK;
+}
+
+// 清空字典
+void dictRelease(dict *d) {
+  // 删除并清空两个哈希表
+  _dictClear(d, &d->ht[0], NULL);
+  _dictClear(d, &d->ht[1], NULL);
+
+  zfree(d);
+}
 
 dictEntry *dictFind(dict *d, const void *key) {
   dictEntry *he;
@@ -216,8 +290,9 @@ dictEntry *dictFind(dict *d, const void *key) {
     // 遍历给定索引上的链表的所有节点
     he = d->ht[table].table[idx];
     while(he) {
-      if (dictCompareKeys(d, key, he->key))
+      if (dictCompareKeys(d, key, he->key)) {
         return he;
+      }
       he = he->next;
     }
     // 如果程序遍历完 0 号哈希表，仍然没找到指定的键的节点
@@ -230,14 +305,54 @@ dictEntry *dictFind(dict *d, const void *key) {
   return NULL; // 两个表都没找到
 }
 
-void *dictFetchValue(dict *d, const void *key) {}
-
-int dictResize(dict *d) {
-
+// 获取包含给定键的节点的值
+void *dictFetchValue(dict *d, const void *key) {
+  dictEntry*he;
+  he = dictFind(d, key);
+  return he ? dictGetKey(he) : NULL;
 }
 
-dictIterator *dictGetIterator(dict *d) {}
-dictIterator *dictGetSafeIterator(dict *d) {}
+// 手动rehash
+int dictResize(dict *d) {
+  int minimal;
+
+  // 不能在关闭 rehash 或者正在 rehash 的时候调用
+  if (!dict_can_resize || dictIsRehashing(d))
+    return DICT_ERR;
+
+  // 计算让比率接近 1：1 所需要的最少节点数量
+  minimal = d->ht[0].used;
+  if (minimal < DICT_HT_INITIAL_SIZE)
+    minimal = DICT_HT_INITIAL_SIZE;
+
+  // 调整字典的大小 注意仅仅是标记了开启rehash 整个过程仍然是渐进式的
+  // T = O(N)
+  return dictExpand(d, minimal);
+}
+
+dictIterator *dictGetIterator(dict *d) {
+  dictIterator *iter = zmalloc(sizeof(*iter));
+
+  iter->d = d;
+  iter->table = 0;
+  iter->index = -1;
+  iter->safe = 0;
+  iter->entry = NULL;
+  iter->nextEntry = NULL;
+
+  return iter;
+}
+
+// 获取安全迭代器
+dictIterator *dictGetSafeIterator(dict *d) {
+  dictIterator *i = dictGetIterator(d);
+
+  // 设置安全迭代器标识
+  i->safe = 1;
+
+  return i;
+}
+
 dictEntry *dictNext(dictIterator *iter) {}
 void dictReleaseIterator(dictIterator *iter) {}
 dictEntry *dictGetRandomKey(dict *d) {}
@@ -297,6 +412,24 @@ unsigned int dictGenCaseHashFunction(const unsigned char *buf, int len) {
   return hash;
 }
 
+/*
+**  ======================== 私有函数 =========================
+ */
+
+// 初始化hash table
+static int _dictInit(dict *d, dictType *type, void *privatePtr) {
+  _dictReset(&d->ht[0]);
+  _dictReset(&d->ht[1]);
+
+  d->type = type; // 配置实现接口
+  d->privdata = privatePtr;
+  d->rehashidx = -1;
+  d->iterators = 0;
+
+  return DICT_OK;
+}
+
+
 // 计算第一个大于等于 size 的2的N次方
 static unsigned long _dictNextPower(unsigned long size) {
   unsigned long i = DICT_HT_INITIAL_SIZE;
@@ -335,13 +468,14 @@ static int _dictKeyIndex(dict *d, const void *key) {
     // T = O(1)
     he = d->ht[table].table[idx];
     while (he) {
-      if (dictCompareKeys(d, key, he->key))
+      if (dictCompareKeys(d, key, he->key)) {
         return -1;
+      }
       he = he->next;
     }
 
     // 如果运行到这里时，说明 0 号哈希表中所有节点都不包含 key
-    // 如果这时 rehahs 正在进行，那么继续对 1 号哈希表进行 rehash
+    // 如果这时 rehash 正在进行，那么继续对 1 号哈希表进行查找
     if (!dictIsRehashing(d))
       break;
   }
@@ -349,14 +483,105 @@ static int _dictKeyIndex(dict *d, const void *key) {
   return idx;
 }
 
-void dictEmpty(dict *d, void(callback)(void *)) {}
 
-void dictEnableResize(void) {}
+// 根据需要 初始化字典 或者对哈希表进行扩展
+static int _dictExpandIfNeeded(dict *d) {
+  if (dictIsRehashing(d))
+    return DICT_OK;
 
-void dictDisableResize(void) {}
+  if (d->ht[0].size == 0) // 空表进行初始化
+    return dictExpand(d, DICT_HT_INITIAL_SIZE);
+
+  // 一下两个条件之一为真时，对字典进行扩展
+  // 1）字典已使用节点数和字典大小之间的比率接近 1：1
+  //    并且 dict_can_resize 为真
+  // 2）已使用节点数和字典大小之间的比率超过 dict_force_resize_ratio
+  if (d->ht[0].used >= d->ht[0].size &&
+      (dict_can_resize ||
+       d->ht[0].used / d->ht[0].size > dict_force_resize_ratio)) {
+    // 新哈希表的大小至少是目前已使用节点数的两倍
+    // T = O(N)
+    return dictExpand(d, d->ht[0].used * 2);
+  }
+
+  return DICT_OK;
+}
+
+void dictEmpty(dict *d, void(callback)(void *)) {
+  _dictClear(d, &d->ht[0], callback);
+  _dictClear(d, &d->ht[1], callback);
+  // 重置属性
+  d->rehashidx = -1;
+  d->iterators = 0;
+}
+
+void dictEnableResize(void) {
+  dict_can_resize = 1;
+}
+
+void dictDisableResize(void) {
+  dict_can_resize = 0;
+}
 
 int dictRehash(dict *d, int n) {
-  return 0;
+  if (!dictIsRehashing(d))
+    return 0;
+
+  // 进行N步迁移 每步迁移一个slot
+  while (n--) {
+    dictEntry *de, *nextde;
+
+    // 如果 #0 ht 为空 表示 rehash执行结束
+    if (d->ht[0].used == 0) {
+      // 释放 0 号哈希表
+      zfree(d->ht[0].table);
+      // 将原来的 1 号哈希表设置为新的 0 号哈希表
+      d->ht[0] = d->ht[1];
+      // 重置旧的 1 号哈希表
+      _dictReset(&d->ht[1]);
+      // 关闭 rehash 标识
+      d->rehashidx = -1;
+      // 返回 0 ，向调用者表示 rehash 已经完成
+      printf("rehash 完成 扩容至 %ld\n", d->ht[0].size);
+      return 0;
+    }
+
+    // 确保 rehashidx 没有越界
+    assert(d->ht[0].size > (unsigned)d->rehashidx);
+
+    // 跳过空slot
+    while(d->ht[0].table[d->rehashidx] == NULL)
+      d->rehashidx++;
+
+    de = d->ht[0].table[d->rehashidx];
+    while (de) { // 将 ht[0] 的数据迁移到 ht[1] 中去
+      unsigned int h;
+
+      // 保存下个节点的指针
+      nextde = de->next;
+
+      /* Get the index in the new hash table */
+      // 计算新哈希表的哈希值，以及节点插入的索引位置
+      h = dictHashKey(d, de->key) & d->ht[1].sizemask;
+      //printf("转移 %d  %d\n",*(int *)de->key, h);
+
+      // 插入节点到新哈希表
+      de->next = d->ht[1].table[h];
+      d->ht[1].table[h] = de;
+
+      // 更新计数器
+      d->ht[0].used--;
+      d->ht[1].used++;
+
+      // 继续处理下个节点
+      de = nextde;
+    }
+
+    d->ht[0].table[d->rehashidx] = NULL; // 迁移后的链表标记为空
+    d->rehashidx++; // 更新 rehash 索引
+  }
+
+  return 1;
 }
 
 int dictRehashMilliseconds(dict *d, int ms) {
@@ -400,7 +625,9 @@ static void *valDup(void *privdata, const void *obj) {
 }
 
 // 对比键的函数
-static int keyCompare(void *privdata, const void *key1, const void *key2);
+static int keyCompare(void *privdata, const void *key1, const void *key2) {
+  return *(int *)key1 == *(int *)key2;
+}
 
 // 销毁键的函数
 static void keyDestructor(void *privdata, void *key) {}
@@ -416,6 +643,7 @@ int main() {
     return -1;
   }
   type->hashFunction = hashFunction;
+  type->keyCompare = keyCompare;
   type->keyDup = keyDup;
   type->valDup = valDup;
 
@@ -423,10 +651,19 @@ int main() {
   if (dictExpand(d, 10) == DICT_ERR) {
     return -1;
   }
-  int k = 1;
-  int v = 1;
-  dictAdd(d, &k, &v);
+  int k = 0;
+  int v = 100;
+  for (int i = 0;i < 100;i++) {
+    //k++;
+    v++;
+    dictReplace(d, &k, &v);
+    //dictAdd(d, &k, &v);
+  }
 
+  dictEntry *de;
+  de = dictFind(d, &k);
+  assert(de != NULL);
+  printf("%d\n", *(int *)de->v.val);
 }
 
 #endif
