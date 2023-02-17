@@ -6,6 +6,7 @@
 #include <sys/time.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /*
  * 通过 dictEnableResize() 和 dictDisableResize() 两个函数，
@@ -398,6 +399,38 @@ dictIterator *dictGetSafeIterator(dict *d) {
   return i;
 }
 
+long long dictFingerprint(dict *d) {
+  long long integers[6], hash = 0;
+  int j;
+
+  integers[0] = (long)d->ht[0].table;
+  integers[1] = d->ht[0].size;
+  integers[2] = d->ht[0].used;
+  integers[3] = (long)d->ht[1].table;
+  integers[4] = d->ht[1].size;
+  integers[5] = d->ht[1].used;
+
+  /* We hash N integers by summing every successive integer with the integer
+   * hashing of the previous sum. Basically:
+   *
+   * Result = hash(hash(hash(int1)+int2)+int3) ...
+   *
+   * This way the same set of integers in a different order will (likely) hash
+   * to a different number. */
+  for (j = 0; j < 6; j++) {
+    hash += integers[j];
+    /* For the hashing step we use Tomas Wang's 64 bit integer hash. */
+    hash = (~hash) + (hash << 21); // hash = (hash << 21) - hash - 1;
+    hash = hash ^ (hash >> 24);
+    hash = (hash + (hash << 3)) + (hash << 8); // hash * 265
+    hash = hash ^ (hash >> 14);
+    hash = (hash + (hash << 2)) + (hash << 4); // hash * 21
+    hash = hash ^ (hash >> 28);
+    hash = hash + (hash << 31);
+  }
+  return hash;
+}
+
 // 返回迭代器指向的当前节点 如果迭代结束返回NULL
 dictEntry *dictNext(dictIterator *iter) {
   while (1) {
@@ -409,7 +442,7 @@ dictEntry *dictNext(dictIterator *iter) {
         if (iter->safe) { // 安全迭代
           iter->d->iterators++;
         } else { // 非安全迭代 需要计算指纹
-          iter->fingerprint = 0;
+          iter->fingerprint = dictFingerprint(iter->d);
         }
       }
       iter->index++; // 更新索引
@@ -441,13 +474,106 @@ dictEntry *dictNext(dictIterator *iter) {
   return NULL;
 }
 
-void dictReleaseIterator(dictIterator *iter) {}
+// 释迭代器占用的资源
+void dictReleaseIterator(dictIterator *iter) {
+  if (!(iter->index == -1 && iter->table == 0)) { // 一个有效的迭代器
+    if (iter->safe) // 释放安全迭代器时 计数器--
+      iter->d->iterators--;
+    else // 释放不安全迭代器时 验证指纹变化
+      assert(iter->fingerprint == dictFingerprint(iter->d));
+  }
+  zfree(iter);
+}
 
-dictEntry *dictGetRandomKey(dict *d) {}
+// 获取一个随机节点
+dictEntry *dictGetRandomKey(dict *d) {
+  dictEntry *he, *orighe;
+  unsigned int h;
+  int listlen, listele;
 
-int dictGetRandomKeys(dict *d, dictEntry **des, int count) {}
+  // 字典为空
+  if (dictSize(d) == 0)
+    return NULL;
 
-void dictPrintStats(dict *d) {}
+  // 进行单步 rehash
+  if (dictIsRehashing(d))
+    _dictRehashStep(d);
+
+  // 如果正在 rehash ，那么将 1 号哈希表也作为随机查找的目标
+  if (dictIsRehashing(d)) {
+    // T = O(N)
+    do {
+      h = random() % (d->ht[0].size + d->ht[1].size);
+      he = (h >= d->ht[0].size) ? d->ht[1].table[h - d->ht[0].size]
+                                : d->ht[0].table[h];
+    } while (he == NULL);
+    // 否则，只从 0 号哈希表中查找节点
+  } else {
+    // T = O(N)
+    do {
+      h = random() & d->ht[0].sizemask;
+      he = d->ht[0].table[h];
+    } while (he == NULL);
+  }
+
+  // 目前 he 已经指向一个非空的节点链表
+    // 程序将从这个链表随机返回一个节点
+    listlen = 0;
+    orighe = he;
+    // 计算节点数量, T = O(1)
+    while(he) {
+        he = he->next;
+        listlen++;
+    }
+    // 取模，得出随机节点的索引
+    listele = random() % listlen;
+    he = orighe;
+    // 按索引查找节点
+    // T = O(1)
+    while(listele--) he = he->next;
+
+    // 返回随机节点
+    return he;
+}
+
+int dictGetRandomKeys(dict *d, dictEntry **des, int count) {
+    int j; /* internal hash table id, 0 or 1. */
+    int stored = 0;
+
+    if (dictSize(d) < count)
+        count = dictSize(d);
+    while (stored < count) {
+        for (j = 0; j < 2; j++) {
+      /* Pick a random point inside the hash table 0 or 1. */
+      unsigned int i = random() & d->ht[j].sizemask;
+      int size = d->ht[j].size;
+
+      /* Make sure to visit every bucket by iterating 'size' times. */
+      while (size--) {
+        dictEntry *he = d->ht[j].table[i];
+        while (he) {
+          /* Collect all the elements of the buckets found non
+           * empty while iterating. */
+          *des = he;
+          des++;
+          he = he->next;
+          stored++;
+          if (stored == count)
+            return stored;
+        }
+        i = (i + 1) & d->ht[j].sizemask;
+      }
+      /* If there is only one table and we iterated it all, we should
+       * already have 'count' elements. Assert this condition. */
+      assert(dictIsRehashing(d) != 0);
+        }
+    }
+    return stored; /* Never reached. */
+}
+
+void dictPrintStats(dict *d) {
+  // 调试使用
+}
 
 unsigned int dictGenHashFunction(const void *key, int len) {
   uint32_t seed = dict_hash_function_seed;
@@ -685,13 +811,118 @@ void dictSetHashFunctionSeed(uint32_t seed) { dict_hash_function_seed = seed; }
 
 uint32_t dictGetHashFunctionSeed(void) { return dict_hash_function_seed; }
 
+/* Function to reverse bits. Algorithm from:
+ * http://graphics.stanford.edu/~seander/bithacks.html#ReverseParallel */
+static unsigned long rev(unsigned long v) {
+  unsigned long s = 8 * sizeof(v); // bit size; must be power of 2
+  unsigned long mask = ~0;
+  while ((s >>= 1) > 0) {
+    mask ^= (mask << s);
+    v = ((v >> s) & mask) | ((v << s) & ~mask);
+  }
+  return v;
+}
+
+/* dictScan() is used to iterate over the elements of a dictionary.
+ *
+ * dictScan() 函数用于迭代给定字典中的元素。
+ *
+ * Iterating works in the following way:
+ *
+ * 迭代按以下方式执行：
+ *
+ * 1) Initially you call the function using a cursor (v) value of 0.
+ *    一开始，你使用 0 作为游标来调用函数。
+ * 2) The function performs one step of the iteration, and returns the
+ *    new cursor value that you must use in the next call.
+ *    函数执行一步迭代操作，
+ *    并返回一个下次迭代时使用的新游标。
+ * 3) When the returned cursor is 0, the iteration is complete.
+ *    当函数返回的游标为 0 时，迭代完成。
+ * 函数保证，在迭代从开始到结束期间，一直存在于字典的元素肯定会被迭代到，
+ * 但一个元素可能会被返回多次。
+ *
+ * 每当一个元素被返回时，回调函数 fn 就会被执行，
+ * fn 函数的第一个参数是 privdata ，而第二个参数则是字典节点 de 。
+ */
 unsigned long dictScan(dict *d, unsigned long v, dictScanFunction *fn,
                        void *privdata) {
-  return 0;
+  dictht *t0, *t1;
+  const dictEntry *de;
+  unsigned long m0, m1;
+
+  // 跳过空字典
+  if (dictSize(d) == 0)
+    return 0;
+
+  if (!dictIsRehashing(d)) { // 迭代只有一个ht的字典
+    // 指向哈希表
+    t0 = &(d->ht[0]);
+
+    // 记录 mask
+    m0 = t0->sizemask;
+    de = t0->table[v & m0];
+    while (de) {
+      fn(privdata, de);
+      de = de->next;
+    }
+  } else { // 迭代有两个ht的字典
+    t0 = &(d->ht[0]);
+    t1 = &(d->ht[1]);
+
+    // 指向两个哈希表
+    t0 = &d->ht[0];
+    t1 = &d->ht[1];
+
+    /* Make sure t0 is the smaller and t1 is the bigger table */
+    // 确保 t0 比 t1 要小
+    if (t0->size > t1->size) {
+      t0 = &d->ht[1];
+      t1 = &d->ht[0];
+    }
+
+    // 记录掩码
+    m0 = t0->sizemask;
+    m1 = t1->sizemask;
+
+    /* Emit entries at cursor */
+    // 指向桶，并迭代桶中的所有节点
+    de = t0->table[v & m0];
+    while (de) {
+      fn(privdata, de);
+      de = de->next;
+    }
+
+    // Iterate over indices in larger table             // 迭代大表中的桶
+    // that are the expansion of the index pointed to   // 这些桶被索引的 expansion 所指向
+    // by the cursor in the smaller table
+    do {
+      /* Emit entries at cursor */
+      // 指向桶，并迭代桶中的所有节点
+      de = t1->table[v & m1];
+      while (de) {
+        fn(privdata, de);
+        de = de->next;
+      }
+
+      /* Increment bits not covered by the smaller mask */
+      v = (((v | m0) + 1) & ~m0) | (v & m0);
+
+      /* Continue while bits covered by mask difference is non-zero */
+    } while (v & (m0 ^ m1));
+  }
+
+  v |= ~m0;
+
+  v = rev(v);
+  v++;
+  v = rev(v);
+
+  return v;
 }
 
 
-#if 1
+#if 0
 #include <string.h>
 
 // 计算哈希值的函数
@@ -726,7 +957,7 @@ static void keyDestructor(void *privdata, void *key) {}
 static void valDestructor(void *privdata, void *obj) {}
 
 int main() {
-  dictType *type;
+  dictType *type ;
   dict *d;
 
   if ((type = zmalloc(sizeof(*type))) == NULL) {
@@ -756,6 +987,7 @@ int main() {
     printf("%d\t", *(int *)de->v.val);
   }
   printf("\n");
+  dictReleaseIterator(di);
 }
 
 #endif
