@@ -205,7 +205,52 @@ dictEntry *dictReplaceRaw(dict *d, void *key) {
 }
 
 static int dictGenericDelete(dict *d, const void *key, int nofree) {
+  unsigned int h, idx;
+  dictEntry *he, *prevHe;
+  int table;
 
+  if (d->ht[0].size == 0)
+    return DICT_ERR;
+
+  // 进行 单步rehash
+  if (dictIsRehashing(d))
+    _dictRehashStep(d);
+
+  // 计算哈希值
+  h = dictHashKey(d, key);
+
+  for (table = 0;table <= 1;table++) {
+    idx = h & d->ht[table].sizemask;
+    he = d->ht[table].table[idx];
+    prevHe = NULL;
+
+    while(he) {
+      // 找到了
+      if (dictCompareKeys(d, key, he->key)) {
+        if (prevHe)
+          prevHe->next = he->next;
+        else
+          d->ht[table].table[idx] = he->next;
+
+        if (!nofree) {
+          dictFreeKey(d, he);
+          dictFreeVal(d, he);
+        }
+
+        zfree(he);
+
+        d->ht[table].used--;
+
+        // 报告已经找到
+        return DICT_OK;
+      }
+
+      prevHe = he;
+      he = he->next;
+    }
+  }
+  // 没找到
+  return DICT_ERR;
 }
 
 // 删除key 释放value
@@ -353,10 +398,55 @@ dictIterator *dictGetSafeIterator(dict *d) {
   return i;
 }
 
-dictEntry *dictNext(dictIterator *iter) {}
+// 返回迭代器指向的当前节点 如果迭代结束返回NULL
+dictEntry *dictNext(dictIterator *iter) {
+  while (1) {
+    if (iter->entry == NULL) { // 1 迭代器第一次执行 2 迭代器到了链表尾部
+      // 指向被迭代的哈希表
+      dictht *ht =  &iter->d->ht[iter->table];
+      // 初次迭代时执行
+      if (iter->index == -1 && iter->table == 0) {
+        if (iter->safe) { // 安全迭代
+          iter->d->iterators++;
+        } else { // 非安全迭代 需要计算指纹
+          iter->fingerprint = 0;
+        }
+      }
+      iter->index++; // 更新索引
+
+      if (iter->index >= (signed) ht->size) {
+        if (dictIsRehashing(iter->d) && iter->table == 0) {
+          // 如果正在 rehash #1 ht 也在使用
+          iter->table++;
+          iter->index = 0;
+          ht = &iter->d->ht[1];
+        } else { // 如果没有 rehash 那么迭代已经完成
+          break;
+        }
+      }
+
+      iter->entry = ht->table[iter->index];
+    } else { // 正在迭代
+      iter->entry = iter->nextEntry;
+    }
+
+    // 如果当前节点不为空 那么也记录下该节点的下个节点
+    // 因为安全迭代器有可能将迭代器返回的当前节点删除
+    if (iter->entry) {
+      iter->nextEntry = iter->entry->next;
+      return iter->entry;
+    }
+  }
+
+  return NULL;
+}
+
 void dictReleaseIterator(dictIterator *iter) {}
+
 dictEntry *dictGetRandomKey(dict *d) {}
+
 int dictGetRandomKeys(dict *d, dictEntry **des, int count) {}
+
 void dictPrintStats(dict *d) {}
 
 unsigned int dictGenHashFunction(const void *key, int len) {
@@ -654,16 +744,18 @@ int main() {
   int k = 0;
   int v = 100;
   for (int i = 0;i < 100;i++) {
-    //k++;
+    k++;
     v++;
-    dictReplace(d, &k, &v);
-    //dictAdd(d, &k, &v);
+    dictAdd(d, &k, &v);
   }
 
+  dictIterator *di;
+  di = dictGetSafeIterator(d);
   dictEntry *de;
-  de = dictFind(d, &k);
-  assert(de != NULL);
-  printf("%d\n", *(int *)de->v.val);
+  while((de = dictNext(di))) {
+    printf("%d\t", *(int *)de->v.val);
+  }
+  printf("\n");
 }
 
 #endif
