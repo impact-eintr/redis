@@ -1,7 +1,28 @@
 #ifndef REDIS_H_
 #define REDIS_H_
 
+#include <unistd.h>
+#include <assert.h>
+
 #include "dict.h"
+
+// 对象类型
+#define REDIS_STRING 0
+#define REDIS_LIST 1
+#define REDIS_SET 2
+#define REDIS_ZSET 3
+#define REDIS_HASH 4
+
+// 对象编码
+#define REDIS_ENCODING_RAW 0        /* Raw representation */
+#define REDIS_ENCODING_INT 1        /* Encoded as integer */
+#define REDIS_ENCODING_HT 2         /* Encoded as hash table */
+#define REDIS_ENCODING_ZIPMAP 3     /* Encoded as zipmap */
+#define REDIS_ENCODING_LINKEDLIST 4 /* Encoded as regular linked list */
+#define REDIS_ENCODING_ZIPLIST 5    /* Encoded as ziplist */
+#define REDIS_ENCODING_INTSET 6     /* Encoded as intset */
+#define REDIS_ENCODING_SKIPLIST 7   /* Encoded as skiplist */
+#define REDIS_ENCODING_EMBSTR 8     /* Embedded sds string encoding */
 
 #define ZSKIPLIST_MAXLEVEL 32
 #define ZSKIPLIST_P 0.25
@@ -24,6 +45,7 @@ typedef struct redisObject {
 
 // 跳表节点
 typedef struct zskiplistNode {
+  unsigned int h; // 本节点高度
   // 成员对象
   robj *obj;
   // 分值
@@ -33,7 +55,7 @@ typedef struct zskiplistNode {
   // 层
   struct zskiplistLevel {
     // 前进指针
-    struct zskiplistNode *fordward;
+    struct zskiplistNode *forward;
     // 跨度
     unsigned int span;
   } level[];
@@ -93,5 +115,10 @@ unsigned long zslGetRank(zskiplist *zsl, double score, robj *o);
 // Redis Object implementation
 void decrRefCount(robj *obj);
 void decrRefCountVoid(void *o);
+int compareStringObjects(robj *a, robj *b);
+int equalStringObjects(robj *a, robj *b);
+
+
+#define redisAssert(_e) ((_e)?(void)0 : (assert(_e),_exit(1)))
 
 #endif // REDIS_H_
