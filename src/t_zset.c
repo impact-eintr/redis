@@ -240,17 +240,158 @@ int zslDelete(zskiplist *zsl, double score, robj *obj) {
   }
 }
 
-zskiplistNode *zslFirstInRange(zskiplist *zsl, zrangespec *range) {
+// 大于等于 min
+static int zslValueGteMin(double value, zrangespec *spec) {
+  return spec->minex ? (value > spec->min) : (value >= spec->min);
+}
 
+// 小于等于 max
+static int zslValueLteMax(double value, zrangespec *spec) {
+  return spec->maxex ? (value < spec->max) : (value <= spec->max);
+}
+
+int zslIsInRange(zskiplist *zsl, zrangespec *range) {
+  zskiplistNode *x;
+  if (range->min > range->max ||
+      (range->min == range->max && (range->minex || range->maxex)))
+    return 0;
+
+  // 检查最大分值
+  x = zsl->tail;
+  if (x == NULL || !zslValueGteMin(x->score, range))
+    return 0;
+
+  // 检查最小分值
+  x = zsl->header->level[0].forward;
+  if (x == NULL || !zslValueLteMax(x->score, range))
+    return 0;
+
+  return 1;
+}
+
+zskiplistNode *zslFirstInRange(zskiplist *zsl, zrangespec *range) {
+  zskiplistNode *x;
+  if (!zslIsInRange(zsl, range))
+    return NULL;
+
+  // 遍历跳表
+  x = zsl->header;
+  for (int i = zsl->level - 1; i >= 0; i--) {
+    while (x->level[i].forward &&
+           !zslValueGteMin(x->level[i].forward->score, range)) {
+      x = x->level[i].forward;
+    }
+  }
+
+  // 需要往后推一位
+  x = x->level[0].forward;
+  redisAssert(x != NULL);
+
+  if (!zslValueLteMax(x->score, range))
+    return NULL;
+  return x;
 }
 
 zskiplistNode *zslLastInRange(zskiplist *zsl, zrangespec *range) {
+  zskiplistNode *x;
+  int i;
+  if (!zslIsInRange(zsl, range))
+    return NULL;
 
+  // 遍历跳表
+  x = zsl->header;
+  for (int i = zsl->level - 1; i >= 0; i--) {
+    while (x->level[i].forward &&
+           zslValueLteMax(x->level[i].forward->score, range)) {
+      x = x->level[i].forward;
+    }
+  }
+
+  redisAssert(x != NULL);
+
+  if (!zslValueGteMin(x->score, range))
+    return NULL;
+  return x;
 }
 
-double zzlGetScore(unsigned char *sptr) {
+unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec *range,
+                                    dict *dict) {
+  zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
+  unsigned long removed = 0;
+  int i;
 
+  // 记录所有和被删除节点（们）有关的节点
+  // T_wrost = O(N) , T_avg = O(log N)
+  x = zsl->header;
+  for (i = zsl->level - 1; i >= 0; i--) {
+    while (x->level[i].forward &&
+           (range->minex ? x->level[i].forward->score <= range->min
+                         : x->level[i].forward->score < range->min))
+      x = x->level[i].forward;
+    update[i] = x;
+  }
+
+  x = x->level[0].forward;
+  while(x && (range->maxex ? x->score < range->max : x->score <= range->max)) {
+    zskiplistNode *next = x->level[0].forward;
+    zslDeleteNode(zsl, x, update);
+    dictDelete(dict, x->obj);
+    zslFreeNode(x);
+    removed++;
+    x = next;
+  }
+  return removed;
 }
+
+unsigned long zslDeleteRangeByRank(zskiplist *zsl, unsigned int start,
+                                   unsigned int end, dict *dict) {
+  zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
+  unsigned long traversed = 0, removed = 0;
+  int i;
+
+  // 沿着前进指针移动到指定排位的起始位置，并记录所有沿途指针
+  // T_wrost = O(N) , T_avg = O(log N)
+  x = zsl->header;
+  for (i = zsl->level - 1; i >= 0; i--) {
+    while (x->level[i].forward && (traversed + x->level[i].span) < start) {
+      traversed += x->level[i].span;
+      x = x->level[i].forward;
+    }
+    update[i] = x;
+  }
+
+  // 移动到排位的起始的第一个节点
+  traversed++;
+  x = x->level[0].forward;
+  // 删除所有在给定排位范围内的节点
+  // T = O(N)
+  while (x && traversed <= end) {
+
+    // 记录下一节点的指针
+    zskiplistNode *next = x->level[0].forward;
+
+    // 从跳跃表中删除节点
+    zslDeleteNode(zsl, x, update);
+    // 从字典中删除节点
+    dictDelete(dict, x->obj);
+    // 释放节点结构
+    zslFreeNode(x);
+
+    // 为删除计数器增一
+    removed++;
+
+    // 为排位计数器增一
+    traversed++;
+
+    // 处理下个节点
+    x = next;
+  }
+
+  // 返回被删除节点的数量
+  return removed;
+}
+
+double zzlGetScore(unsigned char *sptr) {}
 
 void zzlNext(unsigned char *zl, unsigned char **eptr, unsigned char **sptr) {
 
@@ -271,58 +412,91 @@ void zsetConvert(robj *zobj, int encoding) {
 // 查查找包含给定分值和成员对象的节点在跳表中的排位
 unsigned long zslGetRank(zskiplist *zsl, double score, robj *o) {
   zskiplistNode *x;
-  unsigned lonmg rank = 0;
-  int i;
+  unsigned long rank = 0;
 
   // 遍历整个跳表
   x = zsl->header;
-  for (i = zsl->level-1; i >= 0; i--) {
-while (x->level[i].forward &&
-           (x->level[i].forward->score < score || // 对比分值
-            (x->level[i].forward->score == score &&
-             compareStringObjects(x->level[i].forward->obj, obj) < 0)))  // 对比成员
+  for (int i = zsl->level - 1; i >= 0; i--) {
+    while (
+        x->level[i].forward &&
+        (x->level[i].forward->score < score || // 对比分值
+         (x->level[i].forward->score == score &&
+          compareStringObjects(x->level[i].forward->obj, o) <= 0))) // 对比成员
+    {
+      rank += x->level[i].span;
+      x = x->level[i].forward;
+    }
 
-  {
-
-  }
+    if (x->obj && equalStringObjects(x->obj, o)) {
+      return rank;
+    }
   }
 
   // 没找到
   return 0;
 }
 
+// 根据排位在跳表中查找元素 排位的起始值为1
+zskiplistNode *zslGetElementByRank(zskiplist *zsl, unsigned long rank) {
+  zskiplistNode *x;
+  unsigned long traversed = 0;
+  int i;
+
+  // T_wrost = O(N), T_avg = O(log N)
+  x = zsl->header;
+  for (i = zsl->level - 1; i >= 0; i--) {
+
+    // 遍历跳跃表并累积越过的节点数量
+    while (x->level[i].forward && (traversed + x->level[i].span) <= rank) {
+      traversed += x->level[i].span;
+      x = x->level[i].forward;
+    }
+
+    // 如果越过的节点数量已经等于 rank
+    // 那么说明已经到达要找的节点
+    if (traversed == rank) {
+      return x;
+    }
+  }
+
+  // 没找到目标节点
+  return NULL;
+}
+
 #if 1
 
 void printSkl(zskiplist *zsl) {
-  printf("[lvl:%d|header|len:%3ld|", zsl->level, zsl->length);
-  for (int i = 0; i < zsl->level;i++) {
-    printf("    |");
-  }
-  printf("tail]\n\n");
+  printf("[lvl:%d|header|len:%3ld|tail]\n\n", zsl->level, zsl->length);
 
   zskiplistNode *x = zsl->header;
-  for (int i = 0; i < zsl->length; i++) {
-    int lv = x->h - 1;
-    while (x->level[lv].forward == NULL && lv > -1) {
-      lv--;
-    }
-    if (lv < 0) {
-      break;
-    }
-
-    x = x->level[0].forward;
-
-    printf("[lvl:%d|score:%3d|obj:|", x->h, (int)x->score);
-    for (int i = 0;i < x->h;i++) {
-      printf("    |");
+  for (int i = 0; i <= zsl->length; i++) {
+    printf("[lvl:%2d|score:%3d|obj:|", x->h, (int)x->score);
+    if (i == 0) {
+      for (int i = 0; i < zsl->level; i++) {
+        printf(" %2d |", x->level[i].span);
+      }
+      for (int i = zsl->level; i < x->h - zsl->level; i++) {
+        printf(" |");
+      }
+    } else {
+      for (int i = 0; i < x->h; i++) {
+        printf(" %2d |", x->level[i].span);
+      }
     }
     printf("]\n\n");
+    x = x->level[0].forward;
   }
 
-  printf("[====================|NULL|NULL|NULL|NULL]\n");
+  printf("[=====================");
+  for (int i = 0;i < zsl->level; i++) {
+    printf("|NULL");
+  }
+  printf("]\n");
 }
 
+#include <time.h>
 int main(int argc, char **argv) {
+  srandom((unsigned long)time(NULL));
   zskiplist *zsl = zslCreate();
   int value = 666;
   robj *obj = zmalloc(sizeof(*obj));
@@ -332,13 +506,15 @@ int main(int argc, char **argv) {
   for (int i = 10;i > 0;i--) {
     zslInsert(zsl, i, obj);
   }
-  for (int i = 11;i <21;i++) {
+  for (int i = 11;i <=20;i++) {
     zslInsert(zsl, i, obj);
   }
+  printSkl(zsl);
 
-  printSkl(zsl);
-  zslDelete(zsl, 9, obj);
-  printSkl(zsl);
+  //printf("%ld\n", zslGetRank(zsl, 12, obj));
+  //zskiplistNode *x;
+  //x = zslGetElementByRank(zsl, 18);
+  //printf("%d\n", (int)x->score);
 }
 
 #endif

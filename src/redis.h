@@ -56,7 +56,7 @@ typedef struct zskiplistNode {
   struct zskiplistLevel {
     // 前进指针
     struct zskiplistNode *forward;
-    // 跨度
+    // 跨度 用于记录两个节点之间的距离
     unsigned int span;
   } level[];
 } zskiplistNode;
