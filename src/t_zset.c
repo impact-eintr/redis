@@ -463,7 +463,7 @@ zskiplistNode *zslGetElementByRank(zskiplist *zsl, unsigned long rank) {
   return NULL;
 }
 
-#if 1
+#if 0
 
 void printSkl(zskiplist *zsl) {
   printf("[lvl:%d|header|len:%3ld|tail]\n\n", zsl->level, zsl->length);
