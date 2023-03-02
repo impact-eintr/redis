@@ -36,6 +36,7 @@ static intset *intsetResize(intset *is, uint32_t len) {
   return is;
 }
 
+// 以目标编码从is(可能与目标编码不同)中取数据
 static int64_t _intsetGetEncoded(intset *is, int pos, uint8_t enc) {
   int64_t v64;
   int32_t v32;
@@ -86,6 +87,7 @@ static uint8_t intsetSearch(intset *is, int64_t value, uint32_t *pos) {
   int min = 0, max = intrev32ifbe(is->length) - 1, mid = -1;
   int64_t cur = -1;
 
+  // TODO encoding 为什么改变了
   // is 为空
   if (intrev32ifbe(is->length) == 0) {
     if (pos)
@@ -124,7 +126,6 @@ static uint8_t intsetSearch(intset *is, int64_t value, uint32_t *pos) {
   if (value == cur) {
     if (pos)
       *pos = mid;
-    printf("找到 %ld\n", value);
     return 1;
   } else {
     if (pos)
@@ -141,15 +142,23 @@ static intset *intsetUpgradeAndAdd(intset *is, int64_t value) {
   // 当前集合的元素数量
   int length = intrev32ifbe(is->length);
 
-  int prepend = value < 0 ? 1 : 0;
-  is->encoding = intrev32ifbe(newenc);
+  // 调用扩容只可能是添加了一个比所有现有数据都大的数(正数)或都小的数(负数)
+  int prepend = value < 0 ? 1 : 0; // 正数就添加到最后 负数就添加到最前
+  is->encoding = intrev32ifbe(newenc); // 更新编码
+  // 扩容 不是单纯的+1 而是翻倍 因为单个slot保存了更长编码的数据
   is = intsetResize(is, intrev32ifbe(is->length)+1);
+
   // 迁移数据
   while(length--) {
     _intsetSet(is, length+prepend, _intsetGetEncoded(is, length, curenc));
-    printf("迁移中\n");
   }
 
+  if (prepend)
+    _intsetSet(is, 0, value);
+  else
+    _intsetSet(is, intrev32ifbe(is->length), value);
+
+  is->length = intrev32ifbe(intrev32ifbe(is->length)+1);
 
   return is;
 }
@@ -172,6 +181,7 @@ static void intsetMoveTail(intset *is, uint32_t from, uint32_t to) {
     src = (int16_t *)is->contents + from;
     dst = (int16_t *)is->contents + to;
     bytes *= sizeof(int16_t);
+    printf("移动\n");
   }
   // 移动数据
   memmove(dst, src, bytes);
@@ -198,7 +208,6 @@ intset *intsetAdd(intset *is, int64_t value, uint8_t *success) {
     if (pos < intrev32ifbe(is->length))
       intsetMoveTail(is, pos, pos+1); // 把pos移动到pos+1的位置
     _intsetSet(is, pos, value); //  插入数据
-
     is->length = intrev32ifbe(intrev32ifbe(is->length)+1); // 计数器递增
     return is;
   }
@@ -454,14 +463,20 @@ int main(int argc, char **argv) {
     ok();
   }
 }
+
 #else
 
 int main() {
   intset *is = intsetNew();
   uint8_t succ;
-  intsetAdd(is, 100, &succ);
-  intsetAdd(is, 200, &succ);
-  intsetAdd(is, 1<<20, &succ);
+  is = intsetAdd(is, 1<<1, &succ);
+  is = intsetAdd(is, 1<<2, &succ);
+  is = intsetAdd(is, 1<<3, &succ);
+  is = intsetAdd(is, 1<<4, &succ);
+  is = intsetAdd(is, 1<<5, &succ);
+  is = intsetAdd(is, 1<<6, &succ);
+  is = intsetAdd(is, 1<<20, &succ);
+  is = intsetAdd(is, (int64_t)1<<32, &succ);
   int succ2;
   intsetRemove(is, 300, &succ2);
 }
