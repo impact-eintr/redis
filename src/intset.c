@@ -87,7 +87,6 @@ static uint8_t intsetSearch(intset *is, int64_t value, uint32_t *pos) {
   int min = 0, max = intrev32ifbe(is->length) - 1, mid = -1;
   int64_t cur = -1;
 
-  // TODO encoding 为什么改变了
   // is 为空
   if (intrev32ifbe(is->length) == 0) {
     if (pos)
@@ -181,7 +180,6 @@ static void intsetMoveTail(intset *is, uint32_t from, uint32_t to) {
     src = (int16_t *)is->contents + from;
     dst = (int16_t *)is->contents + to;
     bytes *= sizeof(int16_t);
-    printf("移动\n");
   }
   // 移动数据
   memmove(dst, src, bytes);
@@ -237,24 +235,45 @@ intset *intsetRemove(intset *is, int64_t value, int *success) {
   return is;
 }
 
-uint8_t intsetFind(intset *is, int64_t value) {}
+// 判断给定值是否存在于集合中
+uint8_t intsetFind(intset *is, int64_t value) {
+  uint8_t valenc = _intsetValueEncoding(value);
 
-int64_t intsetRandom(intset *is) {}
+  // 集合无法保存的大数据
+  return valenc <= intrev32ifbe(is->encoding) && intsetSearch(is, value, NULL);
+}
 
-uint8_t intsetGet(intset *is, uint32_t pos, int64_t *value) {}
+// 从整数集合中随机返回一个数据
+int64_t intsetRandom(intset *is) {
+  return _intsetGet(is, rand() % intrev32ifbe(is->length));
+}
 
-uint32_t intsetLen(intset *is) {}
+uint8_t intsetGet(intset *is, uint32_t pos, int64_t *value) {
+  if (pos < intrev32ifbe(is->length)) {
+    *value = _intsetGet(is, pos);
+    return 1;
+  }
 
-size_t intsetBlobLen(intset *is) {}
+  return 0;
+}
 
-#if 0
+uint32_t intsetLen(intset *is) {
+  return intrev32ifbe(is->length);
+}
+
+// 计算整数集合占用的字节总量
+size_t intsetBlobLen(intset *is) {
+  return sizeof(intset) + intrev32ifbe(is->length) * intrev32ifbe(is->encoding);
+}
+
+#if 1
 
 #include <sys/time.h>
 
 void intsetRepr(intset *is) {
   int i;
   for (i = 0; i < intrev32ifbe(is->length); i++) {
-    printf("%lld\n", (uint64_t)_intsetGet(is, i));
+    printf("%ld\n", (uint64_t)_intsetGet(is, i));
   }
   printf("\n");
 }
