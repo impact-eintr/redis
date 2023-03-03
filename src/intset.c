@@ -266,7 +266,7 @@ size_t intsetBlobLen(intset *is) {
   return sizeof(intset) + intrev32ifbe(is->length) * intrev32ifbe(is->encoding);
 }
 
-#if 1
+#if 0
 
 #include <sys/time.h>
 
@@ -481,23 +481,6 @@ int main(int argc, char **argv) {
     checkConsistency(is);
     ok();
   }
-}
-
-#else
-
-int main() {
-  intset *is = intsetNew();
-  uint8_t succ;
-  is = intsetAdd(is, 1<<1, &succ);
-  is = intsetAdd(is, 1<<2, &succ);
-  is = intsetAdd(is, 1<<3, &succ);
-  is = intsetAdd(is, 1<<4, &succ);
-  is = intsetAdd(is, 1<<5, &succ);
-  is = intsetAdd(is, 1<<6, &succ);
-  is = intsetAdd(is, 1<<20, &succ);
-  is = intsetAdd(is, (int64_t)1<<32, &succ);
-  int succ2;
-  intsetRemove(is, 300, &succ2);
 }
 
 #endif
