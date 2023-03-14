@@ -23,7 +23,7 @@ static inline size_t sdslen(const sds s) {
 }
 
 
-size_t sdsavail(const sds s) {
+static size_t sdsavail(const sds s) {
   struct sdshdr *sh = (void *)(s - sizeof(struct sdshdr));
   return sh->free;
 }

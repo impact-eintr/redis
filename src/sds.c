@@ -1017,6 +1017,7 @@ sds sdsjoin(char **argv, int argc, char *sep)
   return join;
 }
 
+#if 0
 int main(void) {
   {
     struct sdshdr *sh;
@@ -1048,3 +1049,4 @@ int main(void) {
         sdsfree(x);
   }
 }
+#endif
