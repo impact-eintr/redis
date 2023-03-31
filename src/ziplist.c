@@ -347,36 +347,38 @@ static void zipSaveInteger(unsigned char*p, int64_t value, unsigned char encodin
 }
 
 
-static void zipLoadInteger(unsigned char*p, int64_t value, unsigned char encoding) {
+static int64_t zipLoadInteger(unsigned char*p, unsigned char encoding) {
   int16_t i16;
   int32_t i32;
-  int64_t i64;
+  int64_t i64, ret = 0;
 
   if (encoding == ZIP_INT_8B) {
-    ((int8_t*)p)[0] = (int8_t)value;
+    ret = ((int8_t *)p)[0];
   } else if (encoding == ZIP_INT_16B) {
-    i16 = value;
-    memcpy(p, &i16, sizeof(i16));
-    memrev16ifbe(p);
-  } else if (encoding == ZIP_INT_24B) {
-    i32 = value<<8;
-    memrev32ifbe(&i32);
-    memcpy(p, ((uint8_t*)&i32)+1, sizeof(i32)-sizeof(uint8_t));
+    memcpy(&i16, p, sizeof(i16));
+    memrev16ifbe(&i16);
+    ret = i16;
   } else if (encoding == ZIP_INT_32B) {
-    i32 = value;
-    memcpy(p, &i32, sizeof(i32));
-    memrev32ifbe(p);
+    memcpy(&i32, p, sizeof(i32));
+    memrev32ifbe(&i32);
+    ret = i32;
+  } else if (encoding == ZIP_INT_24B) {
+    i32 = 0;
+    memcpy(((uint8_t *)&i32) + 1, p, sizeof(i32) - sizeof(uint8_t));
+    memrev32ifbe(&i32);
+    ret = i32 >> 8;
   } else if (encoding == ZIP_INT_64B) {
-    i64 = value;
-    memcpy(p, &i64, sizeof(i64));
-    memrev64ifbe(p);
+    memcpy(&i64, p, sizeof(i64));
+    memrev64ifbe(&i64);
+    ret = i64;
   } else if (encoding >= ZIP_INT_IMM_MIN && encoding <= ZIP_INT_IMM_MAX) {
-    // Nothing to do
+    ret = (encoding & ZIP_INT_IMM_MASK) - 1;
   } else {
     assert(NULL);
   }
-}
 
+  return ret;
+}
 
 // 将p所指向的列表节点的信息全部保存在 zlentry 中 并返回该 zlentry
 static zlentry zipEntry(unsigned char *p) {
@@ -596,6 +598,7 @@ unsigned char *ziplistIndex(unsigned char *zl, int index) {
   return (p[0] == ZIP_END || index > 0) ? NULL : p;
 }
 
+// 下一个节点
 unsigned char *ziplistNext(unsigned char *zl, unsigned char *p) {
   ((void) zl);
 
@@ -611,21 +614,43 @@ unsigned char *ziplistNext(unsigned char *zl, unsigned char *p) {
   return p;
 }
 
+// 前一个节点
 unsigned char *ziplistPrev(unsigned char *zl, unsigned char *p) {
   zlentry entry;
   if (p[0] == ZIP_END) {
-     // TODO 继续写向前遍历
+    p = ZIPLIST_ENTRY_TAIL(zl);
+    return (p[0] == ZIP_END) ? NULL : p;
   } else if (p == ZIPLIST_ENTRY_HEAD(zl)) {
     return NULL;
   } else {
-
+    entry = zipEntry(p);
+    assert(entry.prevrawlen > 0);
+    return p-entry.prevrawlen; // 指向前一个节点
   }
 }
 
 
-unsigned int ziplistGet(unsigned char *p, unsigned char **sval,
-                        unsigned int *slen, long long *lval) {
+unsigned int ziplistGet(unsigned char *p, unsigned char **sstr,
+                        unsigned int *slen, long long *sval) {
+  zlentry entry;
+  if (p == NULL || p[0] == ZIP_END)
+    return 0;
 
+  if (sstr)
+    *sstr = NULL;
+
+  entry = zipEntry(p);
+  if (ZIP_IS_STR(entry.encoding)) {
+    if (sstr) {
+      *slen = entry.len;
+      *sstr = p+entry.headersize;
+    }
+  } else {
+    if (sval) {
+      *sval = zipLoadInteger(p+entry.headersize, entry.encoding);
+    }
+  }
+  return 1;
 }
 
 unsigned char *ziplistInsert(unsigned char *zl, unsigned char *p,
@@ -633,15 +658,114 @@ unsigned char *ziplistInsert(unsigned char *zl, unsigned char *p,
   return __ziplistInsert(zl, p, s, slen);
 }
 
-unsigned char *ziplistDelete(unsigned char *zl, unsigned char **p);
+unsigned char *ziplistDelete(unsigned char *zl, unsigned char **p) {
+
+  size_t offset = *p-zl;
+  zl = __ziplistDelete(zl, *p, 1);
+
+  *p = zl+offset;
+  return zl;
+}
+
 unsigned char *ziplistDeleteRange(unsigned char *zl, unsigned int index,
-                                  unsigned int num);
+                                  unsigned int num) {
+}
+
 unsigned int ziplistCompare(unsigned char *p, unsigned char *s,
-                            unsigned int slen);
+                            unsigned int slen) {
+
+}
+
 unsigned char *ziplistFind(unsigned char *p, unsigned char *vstr,
-                           unsigned int vlen, unsigned int skip);
-unsigned int ziplistLen(unsigned char *zl);
-size_t ziplistBlobLen(unsigned char *zl);
+                           unsigned int vlen, unsigned int skip) {
+  int skipcnt = 0;
+  unsigned char vencoding = 0;
+  long long vll = 0;
+
+  while (p[0] != ZIP_END) {
+ unsigned int prevlensize, encoding, lensize, len;
+        unsigned char *q;
+
+        ZIP_DECODE_PREVLENSIZE(p, prevlensize);
+        ZIP_DECODE_LENGTH(p + prevlensize, encoding, lensize, len);
+        q = p + prevlensize + lensize;
+
+if (skipcnt == 0) {
+
+            /* Compare current entry with specified entry */
+            // 对比字符串值
+            // T = O(N)
+            if (ZIP_IS_STR(encoding)) {
+                if (len == vlen && memcmp(q, vstr, vlen) == 0) {
+                    return p;
+                }
+            } else {
+                /* Find out if the searched field can be encoded. Note that
+                 * we do it only the first time, once done vencoding is set
+                 * to non-zero and vll is set to the integer value. */
+                // 因为传入值有可能被编码了，
+                // 所以当第一次进行值对比时，程序会对传入值进行解码
+                // 这个解码操作只会进行一次
+                if (vencoding == 0) {
+                    if (!zipTryEncoding(vstr, vlen, &vll, &vencoding)) {
+                        /* If the entry can't be encoded we set it to
+                         * UCHAR_MAX so that we don't retry again the next
+                         * time. */
+                        vencoding = UCHAR_MAX;
+                    }
+                    /* Must be non-zero by now */
+                    assert(vencoding);
+                }
+
+                /* Compare current entry with specified entry, do it only
+                 * if vencoding != UCHAR_MAX because if there is no encoding
+                 * possible for the field it can't be a valid integer. */
+                // 对比整数值
+                if (vencoding != UCHAR_MAX) {
+                    // T = O(1)
+                    long long ll = zipLoadInteger(q, encoding);
+                    if (ll == vll) {
+                        return p;
+                    }
+                }
+            }
+
+            /* Reset skip count */
+            skipcnt = skip;
+        } else {
+            /* Skip entry */
+            skip
+  }
+}
+
+unsigned int ziplistLen(unsigned char *zl) {
+  unsigned int len = 0;
+
+  // 节点数小于 UINT16_MAX
+  // T = O(1)
+  if (intrev16ifbe(ZIPLIST_LENGTH(zl)) < UINT16_MAX) {
+    len = intrev16ifbe(ZIPLIST_LENGTH(zl));
+
+    // 节点数大于 UINT16_MAX 时，需要遍历整个列表才能计算出节点数
+    // T = O(N)
+  } else {
+    unsigned char *p = zl + ZIPLIST_HEADER_SIZE;
+    while (*p != ZIP_END) {
+      p += zipRawEntryLength(p);
+      len++;
+    }
+
+    /* Re-store length if small enough */
+    if (len < UINT16_MAX)
+      ZIPLIST_LENGTH(zl) = intrev16ifbe(len);
+  }
+
+  return len;
+}
+
+size_t ziplistBlobLen(unsigned char *zl) {
+  return intrev32ifbe(ZIPLIST_BYTES(zl));
+}
 
 void ziplistRepr(unsigned char *zl) {
   unsigned char *p;
