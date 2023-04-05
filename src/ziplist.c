@@ -1120,7 +1120,7 @@ void ziplistRepr(unsigned char *zl)
   printf("{end}\n\n");
 }
 
-#if 1
+#if 0
 #include <sys/time.h>
 #include "adlist.h"
 #include "sds.h"
@@ -1308,7 +1308,6 @@ int main(int argc, char **argv) {
 
         /* Deleting entry 1 will increase `prevrawlensize` for entry 2 */
         unsigned char *p = e[1].p;
-        printf("测试\n");
         zl = ziplistDelete(zl, &p);
 
         verify(zl, e);
@@ -1336,7 +1335,7 @@ int main(int argc, char **argv) {
         for (i = 0; i < 20000; i++) {
             zl = ziplistNew();
             ref = listCreate();
-            listSetFreeMethod(ref,sdsfree);
+            listSetFreeMethod(ref,(void (*)(void*))sdsfree);
             len = rand() % 256;
 
             /* Create lists */
