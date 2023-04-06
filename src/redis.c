@@ -1,5 +1,9 @@
 #include "redis.h"
+#include "adlist.h"
+#include "dict.h"
+#include "zmalloc.h"
 
+#include <string.h>
 #include <stdio.h>
 
 // Global vars
@@ -116,7 +120,7 @@ struct redisCommand *commandTable;
  *    使得在集群模式下，一个被标示为 importing 的槽可以接收这命令。
  */
 struct redisCommand redisCommandTable[] = {
-//    {"get", getCommand, 2, "r", 0, NULL, 1, 1, 1, 0, 0},
+    {"get", getCommand, 2, "r", 0, NULL, 1, 1, 1, 0, 0},
     {"set", setCommand, -3, "wm", 0, NULL, 1, 1, 1, 0, 0}
 //    {"setnx", setnxCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
 //    {"setex", setexCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
@@ -278,7 +282,157 @@ struct redisCommand redisCommandTable[] = {
 //    {"pfdebug", pfdebugCommand, -3, "w", 0, NULL, 0, 0, 0, 0, 0}
 };
 
-void intServer() {
+/*          SDS DICT            */
+unsigned int dictSdsHash(const void *key) {
+  return dictGenHashFunction((unsigned char*)key, sdslen((char*)key));
+}
+
+int dictSdsKeyCompare(void *privdata, const void *key1, const void*key2) {
+  int l1, l2;
+  DICT_NOTUSED(privdata);
+
+  l1 = sdslen((sds)key1);
+  l2 = sdslen((sds)key2);
+  if (l1 != l2) {
+    return 0;;
+  }
+  return memcmp(key1, key2, l1);
+}
+
+void dictSdsDestructor(void *privdata, void *val) {
+  DICT_NOTUSED(privdata);
+
+  sdsfree(val);
+}
+
+void dictRedisObjectDestructor(void *privdata, void *val) {
+  DICT_NOTUSED(privdata);
+  if (val == NULL) {
+    return;
+  }
+  decrRefCount(val); // 共享对象
+}
+
+/* Db->dict, keys are sds strings, vals are Redis objects. */
+dictType dbDictType = {
+    dictSdsHash,              /* hash function */
+    NULL,                     /* key dup */
+    NULL,                     /* val dup */
+    dictSdsKeyCompare,        /* key compare */
+    dictSdsDestructor,        /* key destructor */
+    dictRedisObjectDestructor /* val destructor */
+};
+/*          SDS DICT            */
+
+/*          COMMAND TABLE DICT          */
+unsigned int dictSdsCaseHash(const void *key) {
+  return dictGenCaseHashFunction((unsigned char*)key, sdslen((char*)key));
+}
+
+int dictSdsKeyCaseCompare(void *privdata, const void *key1, const void *key2) {
+  DICT_NOTUSED(privdata);
+
+  return strcasecmp(key1, key2) == 0;
+}
+
+dictType commandTableDictType = {
+    dictSdsCaseHash,       /* hash function */
+    NULL,                  /* key dup */
+    NULL,                  /* val dup */
+    dictSdsKeyCaseCompare, /* key compare */
+    dictSdsDestructor,     /* key destructor */
+    NULL                   /* val destructor */
+};
+/*          COMMAND TABLE DICT          */
+
+// 根据 redis.c 文件顶部的命令列表，创建命令表
+void populateCommandTable(void) {
+  int j;
+
+  // 命令的数量
+  int numcommands = sizeof(redisCommandTable) / sizeof(struct redisCommand);
+
+  for (j = 0; j < numcommands; j++) {
+
+    // 指定命令
+    struct redisCommand *c = redisCommandTable + j;
+
+    // 取出字符串 FLAG
+    char *f = c->sflags;
+
+    int retval1, retval2;
+
+    // 根据字符串 FLAG 生成实际 FLAG
+    while (*f != '\0') {
+      switch(*f) {
+      case 'w':
+        c->flags |= REDIS_CMD_WRITE;
+        break;
+      case 'r':
+        c->flags |= REDIS_CMD_READONLY;
+        break;
+      case 'm':
+        c->flags |= REDIS_CMD_DENYOOM;
+        break;
+      case 'a':
+        c->flags |= REDIS_CMD_ADMIN;
+        break;
+      case 'p':
+        c->flags |= REDIS_CMD_PUBSUB;
+        break;
+      case 's':
+        c->flags |= REDIS_CMD_NOSCRIPT;
+        break;
+      case 'R':
+        c->flags |= REDIS_CMD_RANDOM;
+        break;
+      case 'S':
+        c->flags |= REDIS_CMD_SORT_FOR_SCRIPT;
+        break;
+      case 'l':
+        c->flags |= REDIS_CMD_LOADING;
+        break;
+      case 't':
+        c->flags |= REDIS_CMD_STALE;
+        break;
+      case 'M':
+        c->flags |= REDIS_CMD_SKIP_MONITOR;
+        break;
+      case 'k':
+        c->flags |= REDIS_CMD_ASKING;
+        break;
+      default:
+        redisPanic("Unsupported command flag");
+        break;
+      }
+      f++;
+    }
+
+    // 将命令关联到命令表
+    retval1 = dictAdd(server.commands, sdsnew(c->name), c);
+
+    /* Populate an additional dictionary that will be unaffected
+     * by rename-command statements in redis.conf.
+     *
+     * 将命令也关联到原始命令表
+     *
+     * 原始命令表不会受 redis.conf 中命令改名的影响
+     */
+    retval2 = dictAdd(server.orig_commands, sdsnew(c->name), c);
+
+    redisAssert(retval1 == DICT_OK && retval2 == DICT_OK);
+  }
+}
+
+void initServerConfig() {
+  server.dbnum = REDIS_DEFAULT_DBNUM;
+
+  server.commands = dictCreate(&commandTableDictType, NULL);
+  server.orig_commands = dictCreate(&commandTableDictType, NULL);
+  populateCommandTable();
+}
+
+void initServer() {
     int j;
 
     // 设置信号处理函数
@@ -287,17 +441,43 @@ void intServer() {
     //setupSignalHandlers();
 
     // 初始化并创建数据结构
+    // TODO
+    server.current_client = NULL;
+    server.clients = listCreate();
+    server.clients_to_close = listCreate();
 
+    server.db = zmalloc(sizeof(redisDb)*server.dbnum);
 
-
-
-    printf("test\n");
+    // 创建并初始化数据库结构
+    for (j = 0; j < server.dbnum; j++) {
+      server.db[j].dict = dictCreate(&dbDictType, NULL);
+      //server.db[j].expires = dictCreate(&keyptrDictType, NULL);
+      //server.db[j].blocking_keys = dictCreate(&keylistDictType, NULL);
+      //server.db[j].ready_keys = dictCreate(&setDictType, NULL);
+      //server.db[j].watched_keys = dictCreate(&keylistDictType, NULL);
+      //server.db[j].eviction_pool = evictionPoolAlloc();
+      server.db[j].id = j;
+      server.db[j].avg_ttl = 0;
+    }
 }
+
+
 
 #if 1
 
+void test() {
+
+}
+
 int main(int argc, char **argv) {
-    intServer();
+    // 初始化服务器
+    initServerConfig();
+    initServer();
+    printf("test\n");
+
+
+    // TODO 运行事件处理器直到服务器关闭为止
+    test();
 }
 
 #endif

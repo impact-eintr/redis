@@ -6,6 +6,24 @@
 
 #include "dict.h"
 #include "sds.h"
+#include "adlist.h"
+
+#define REDIS_DEFAULT_DBNUM 16
+
+// 命令标志
+#define REDIS_CMD_WRITE 1             /* "w" flag */
+#define REDIS_CMD_READONLY 2          /* "r" flag */
+#define REDIS_CMD_DENYOOM 4           /* "m" flag */
+#define REDIS_CMD_NOT_USED_1 8        /* no longer used flag */
+#define REDIS_CMD_ADMIN 16            /* "a" flag */
+#define REDIS_CMD_PUBSUB 32           /* "p" flag */
+#define REDIS_CMD_NOSCRIPT 64         /* "s" flag */
+#define REDIS_CMD_RANDOM 128          /* "R" flag */
+#define REDIS_CMD_SORT_FOR_SCRIPT 256 /* "S" flag */
+#define REDIS_CMD_LOADING 512         /* "l" flag */
+#define REDIS_CMD_STALE 1024          /* "t" flag */
+#define REDIS_CMD_SKIP_MONITOR 2048   /* "M" flag */
+#define REDIS_CMD_ASKING 4096         /* "k" flag */
 
 // 对象类型
 #define REDIS_STRING 0
@@ -118,6 +136,8 @@ typedef struct redisDb
   long long avg_ttl; /* Average TTL, just for stats */
 } redisDb;
 
+// 因为IO复用 需要为每个客户端维持一个状态
+// 多个客户端状态被服务器用链表链接起来
 typedef struct redisClient
 {
   // 套接字描述符
@@ -128,6 +148,11 @@ typedef struct redisClient
 
   // 当前正在使用的数据库的 id （号码）
   int dictid;
+
+  // 参数
+  int argc;
+  robj **argv;
+
 } redisClient;
 
 
@@ -143,6 +168,11 @@ struct redisServer
   dict *orig_commands; /* Command table before command renaming. */
 
   int dbnum; // default is 16
+
+  list *clients; // 一个链表 保存了所有客户端状态
+  list *clients_to_close; // 一个链表 保存了所有即将关闭的客户端
+
+  redisClient *current_client; // 服务器的当前客户端 仅仅用于崩溃报告
 
 };
 
@@ -251,6 +281,7 @@ void scanGenericCommand(redisClient *c, robj *o, unsigned long cursor);
 int parseScanCursorOrReply(redisClient *c, robj *o, unsigned long *cursor);
 
 #define redisAssert(_e) ((_e)?(void)0 : (assert(_e),_exit(1)))
+#define redisPanic(_e) ((_e)?(void)0 : (assert(_e),_exit(1)))
 
 /* Commands prototypes */
 void authCommand(redisClient *c);
