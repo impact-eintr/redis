@@ -88,8 +88,8 @@ typedef struct zset {
 
 #define REDIS_EVICTION_POOL_SIZE 16
 struct evictionPoolEntry {
-    unsigned long long idle;    /* Object idle time. */
-    sds key;                    /* Key name. */
+  unsigned long long idle;    /* Object idle time. */
+  sds key;                    /* Key name. */
 };
 
 typedef struct redisDb
@@ -251,5 +251,164 @@ void scanGenericCommand(redisClient *c, robj *o, unsigned long cursor);
 int parseScanCursorOrReply(redisClient *c, robj *o, unsigned long *cursor);
 
 #define redisAssert(_e) ((_e)?(void)0 : (assert(_e),_exit(1)))
+
+/* Commands prototypes */
+void authCommand(redisClient *c);
+void pingCommand(redisClient *c);
+void echoCommand(redisClient *c);
+void setCommand(redisClient *c);
+void setnxCommand(redisClient *c);
+void setexCommand(redisClient *c);
+void psetexCommand(redisClient *c);
+void getCommand(redisClient *c);
+void delCommand(redisClient *c);
+void existsCommand(redisClient *c);
+void setbitCommand(redisClient *c);
+void getbitCommand(redisClient *c);
+void setrangeCommand(redisClient *c);
+void getrangeCommand(redisClient *c);
+void incrCommand(redisClient *c);
+void decrCommand(redisClient *c);
+void incrbyCommand(redisClient *c);
+void decrbyCommand(redisClient *c);
+void incrbyfloatCommand(redisClient *c);
+void selectCommand(redisClient *c);
+void randomkeyCommand(redisClient *c);
+void keysCommand(redisClient *c);
+void scanCommand(redisClient *c);
+void dbsizeCommand(redisClient *c);
+void lastsaveCommand(redisClient *c);
+void saveCommand(redisClient *c);
+void bgsaveCommand(redisClient *c);
+void bgrewriteaofCommand(redisClient *c);
+void shutdownCommand(redisClient *c);
+void moveCommand(redisClient *c);
+void renameCommand(redisClient *c);
+void renamenxCommand(redisClient *c);
+void lpushCommand(redisClient *c);
+void rpushCommand(redisClient *c);
+void lpushxCommand(redisClient *c);
+void rpushxCommand(redisClient *c);
+void linsertCommand(redisClient *c);
+void lpopCommand(redisClient *c);
+void rpopCommand(redisClient *c);
+void llenCommand(redisClient *c);
+void lindexCommand(redisClient *c);
+void lrangeCommand(redisClient *c);
+void ltrimCommand(redisClient *c);
+void typeCommand(redisClient *c);
+void lsetCommand(redisClient *c);
+void saddCommand(redisClient *c);
+void sremCommand(redisClient *c);
+void smoveCommand(redisClient *c);
+void sismemberCommand(redisClient *c);
+void scardCommand(redisClient *c);
+void spopCommand(redisClient *c);
+void srandmemberCommand(redisClient *c);
+void sinterCommand(redisClient *c);
+void sinterstoreCommand(redisClient *c);
+void sunionCommand(redisClient *c);
+void sunionstoreCommand(redisClient *c);
+void sdiffCommand(redisClient *c);
+void sdiffstoreCommand(redisClient *c);
+void sscanCommand(redisClient *c);
+void syncCommand(redisClient *c);
+void flushdbCommand(redisClient *c);
+void flushallCommand(redisClient *c);
+void sortCommand(redisClient *c);
+void lremCommand(redisClient *c);
+void rpoplpushCommand(redisClient *c);
+void infoCommand(redisClient *c);
+void mgetCommand(redisClient *c);
+void monitorCommand(redisClient *c);
+void expireCommand(redisClient *c);
+void expireatCommand(redisClient *c);
+void pexpireCommand(redisClient *c);
+void pexpireatCommand(redisClient *c);
+void getsetCommand(redisClient *c);
+void ttlCommand(redisClient *c);
+void pttlCommand(redisClient *c);
+void persistCommand(redisClient *c);
+void slaveofCommand(redisClient *c);
+void debugCommand(redisClient *c);
+void msetCommand(redisClient *c);
+void msetnxCommand(redisClient *c);
+void zaddCommand(redisClient *c);
+void zincrbyCommand(redisClient *c);
+void zrangeCommand(redisClient *c);
+void zrangebyscoreCommand(redisClient *c);
+void zrevrangebyscoreCommand(redisClient *c);
+void zrangebylexCommand(redisClient *c);
+void zrevrangebylexCommand(redisClient *c);
+void zcountCommand(redisClient *c);
+void zlexcountCommand(redisClient *c);
+void zrevrangeCommand(redisClient *c);
+void zcardCommand(redisClient *c);
+void zremCommand(redisClient *c);
+void zscoreCommand(redisClient *c);
+void zremrangebyscoreCommand(redisClient *c);
+void zremrangebylexCommand(redisClient *c);
+void multiCommand(redisClient *c);
+void execCommand(redisClient *c);
+void discardCommand(redisClient *c);
+void blpopCommand(redisClient *c);
+void brpopCommand(redisClient *c);
+void brpoplpushCommand(redisClient *c);
+void appendCommand(redisClient *c);
+void strlenCommand(redisClient *c);
+void zrankCommand(redisClient *c);
+void zrevrankCommand(redisClient *c);
+void hsetCommand(redisClient *c);
+void hsetnxCommand(redisClient *c);
+void hgetCommand(redisClient *c);
+void hmsetCommand(redisClient *c);
+void hmgetCommand(redisClient *c);
+void hdelCommand(redisClient *c);
+void hlenCommand(redisClient *c);
+void zremrangebyrankCommand(redisClient *c);
+void zunionstoreCommand(redisClient *c);
+void zinterstoreCommand(redisClient *c);
+void zscanCommand(redisClient *c);
+void hkeysCommand(redisClient *c);
+void hvalsCommand(redisClient *c);
+void hgetallCommand(redisClient *c);
+void hexistsCommand(redisClient *c);
+void hscanCommand(redisClient *c);
+void configCommand(redisClient *c);
+void hincrbyCommand(redisClient *c);
+void hincrbyfloatCommand(redisClient *c);
+void subscribeCommand(redisClient *c);
+void unsubscribeCommand(redisClient *c);
+void psubscribeCommand(redisClient *c);
+void punsubscribeCommand(redisClient *c);
+void publishCommand(redisClient *c);
+void pubsubCommand(redisClient *c);
+void watchCommand(redisClient *c);
+void unwatchCommand(redisClient *c);
+void clusterCommand(redisClient *c);
+void restoreCommand(redisClient *c);
+void migrateCommand(redisClient *c);
+void askingCommand(redisClient *c);
+void readonlyCommand(redisClient *c);
+void readwriteCommand(redisClient *c);
+void dumpCommand(redisClient *c);
+void objectCommand(redisClient *c);
+void clientCommand(redisClient *c);
+void evalCommand(redisClient *c);
+void evalShaCommand(redisClient *c);
+void scriptCommand(redisClient *c);
+void timeCommand(redisClient *c);
+void bitopCommand(redisClient *c);
+void bitcountCommand(redisClient *c);
+void bitposCommand(redisClient *c);
+void replconfCommand(redisClient *c);
+void waitCommand(redisClient *c);
+void pfselftestCommand(redisClient *c);
+void pfaddCommand(redisClient *c);
+void pfcountCommand(redisClient *c);
+void pfmergeCommand(redisClient *c);
+void pfdebugCommand(redisClient *c);
+
+
 
 #endif // REDIS_H_
