@@ -10,15 +10,31 @@ long long getExpire(redisDb *db, robj *key);
 void setExpire(redisDb *db, robj *key, long long when);
 robj *lookupKey(redisDb *db, robj *key);
 robj *lookupKeyRead(redisDb *db, robj *key);
-robj *lookupKeyWrite(redisDb *db, robj *key);
+
+robj *lookupKeyWrite(redisDb *db, robj *key) {
+  // TODO 明天实现过期机制
+}
+
 robj *lookupKeyReadOrReply(redisClient *c, robj *key, robj *reply);
 robj *lookupKeyWriteOrReply(redisClient *c, robj *key, robj *reply);
 
 void dbAdd(redisDb *db, robj *key, robj *val) {
 
 }
+
 void dbOverwrite(redisDb *db, robj *key, robj *val);
-void setKey(redisDb *db, robj *key, robj *val);
+
+void setKey(redisDb *db, robj *key, robj *val) {
+  if (lookupKeyWrite(db, key) == NULL) {
+    dbAdd(db, key, val);
+  } else {
+    dbOverwrite(db, key, val);
+  }
+
+  // TODO
+
+}
+
 int dbExists(redisDb *db, robj *key);
 robj *dbRandomKey(redisDb *db);
 int dbDelete(redisDb *db, robj *key);

@@ -8,22 +8,22 @@
 #include "sds.h"
 #include "adlist.h"
 
-#define REDIS_DEFAULT_DBNUM 16
-
+#define  REDIS_DEFAULT_HZ     10
+#define  REDIS_DEFAULT_DBNUM  16
 // 命令标志
-#define REDIS_CMD_WRITE 1             /* "w" flag */
-#define REDIS_CMD_READONLY 2          /* "r" flag */
-#define REDIS_CMD_DENYOOM 4           /* "m" flag */
-#define REDIS_CMD_NOT_USED_1 8        /* no longer used flag */
-#define REDIS_CMD_ADMIN 16            /* "a" flag */
-#define REDIS_CMD_PUBSUB 32           /* "p" flag */
-#define REDIS_CMD_NOSCRIPT 64         /* "s" flag */
-#define REDIS_CMD_RANDOM 128          /* "R" flag */
-#define REDIS_CMD_SORT_FOR_SCRIPT 256 /* "S" flag */
-#define REDIS_CMD_LOADING 512         /* "l" flag */
-#define REDIS_CMD_STALE 1024          /* "t" flag */
-#define REDIS_CMD_SKIP_MONITOR 2048   /* "M" flag */
-#define REDIS_CMD_ASKING 4096         /* "k" flag */
+#define  REDIS_CMD_WRITE            1     /* "w" flag  */
+#define  REDIS_CMD_READONLY         2     /* "r" flag  */
+#define  REDIS_CMD_DENYOOM          4     /* "m" flag  */
+#define  REDIS_CMD_NOT_USED_1       8     /* no  longer used  flag  */
+#define  REDIS_CMD_ADMIN            16    /* "a" flag  */
+#define  REDIS_CMD_PUBSUB           32    /* "p" flag  */
+#define  REDIS_CMD_NOSCRIPT         64    /* "s" flag  */
+#define  REDIS_CMD_RANDOM           128   /* "R" flag  */
+#define  REDIS_CMD_SORT_FOR_SCRIPT  256   /* "S" flag  */
+#define  REDIS_CMD_LOADING          512   /* "l" flag  */
+#define  REDIS_CMD_STALE            1024  /* "t" flag  */
+#define  REDIS_CMD_SKIP_MONITOR     2048  /* "M" flag  */
+#define  REDIS_CMD_ASKING           4096  /* "k" flag  */
 
 // 对象类型
 #define REDIS_STRING 0
@@ -46,9 +46,12 @@
 #define ZSKIPLIST_MAXLEVEL 32
 #define ZSKIPLIST_P 0.25
 
+#define UNIT_SECONDS 0
+#define UNIT_MILLISECONDS 1
 
 #define REDIS_LRU_BITS 24
-
+#define REDIS_LRU_CLOCK_MAX ((1<<REDIS_LRU_BITS)-1) // Max value of obj->lru
+#define REDIS_LRU_CLOCK_RESOLUTION 1000
 typedef struct redisObject {
   // 类型
   unsigned type:4;
@@ -61,6 +64,8 @@ typedef struct redisObject {
   // 指向实际值的指针
   void *ptr;
 } robj;
+
+#define LRU_CLOCK() ((1000/server.hz <= REDIS_LRU_CLOCK_RESOLUTION) ? server.lruclock : getLRUClock())
 
 // 跳表节点
 typedef struct zskiplistNode {
@@ -159,6 +164,11 @@ typedef struct redisClient
 // redis服务器
 struct redisServer
 {
+  char *configfile; // 配置文件的绝对路径
+
+  // serverCron() 每秒调用的次数
+  int hz;
+
   // 数据库
   redisDb *db;
 
@@ -166,6 +176,10 @@ struct redisServer
   dict *commands; /* Command table */
   // 命令表（无 rename 配置选项的作用）
   dict *orig_commands; /* Command table before command renaming. */
+
+  // TODO 事件状态
+
+  unsigned lruclock:REDIS_LRU_BITS;
 
   int dbnum; // default is 16
 
@@ -216,6 +230,21 @@ struct redisCommand
   long long microseconds, calls;
 };
 
+/*-----------------------------------------------------------------------------
+ * Extern declarations
+ *----------------------------------------------------------------------------*/
+extern struct redisServer server;
+extern struct sharedObjectsStruct shared;
+extern dictType setDictType;
+extern dictType zsetDictType;
+extern dictType clusterNodesDictType;
+extern dictType clusterNodesBlackListDictType;
+extern dictType dbDictType;
+extern dictType shaScriptObjectDictType;
+extern double R_Zero, R_PosInf, R_NegInf, R_Nan;
+extern dictType hashDictType;
+extern dictType replScriptCacheDictType;
+
 // 开区间 闭区间
 typedef struct
 {
@@ -244,6 +273,9 @@ void zzlPrev(unsigned char *zl, unsigned char **eptr, unsigned char **sptr);
 unsigned int zsetLength(robj *zobj);
 void zsetConvert(robj *zobj, int encoding);
 unsigned long zslGetRank(zskiplist *zsl, double score, robj *o);
+
+// Core funtions
+unsigned int getLRUClock(void);
 
 // Redis Object implementation
 void decrRefCount(robj *obj);
@@ -280,8 +312,21 @@ int verifyClusterConfigWithData(void);
 void scanGenericCommand(redisClient *c, robj *o, unsigned long cursor);
 int parseScanCursorOrReply(redisClient *c, robj *o, unsigned long *cursor);
 
-#define redisAssert(_e) ((_e)?(void)0 : (assert(_e),_exit(1)))
-#define redisPanic(_e) ((_e)?(void)0 : (assert(_e),_exit(1)))
+/* Debugging stuff */
+void _redisAssertWithInfo(redisClient *c, robj *o, char *estr, char *file,
+                          int line);
+void _redisAssert(char *estr, char *file, int line);
+void _redisPanic(char *msg, char *file, int line);
+
+#define redisAssertWithInfo(_c, _o, _e)                                        \
+  ((_e) ? (void)0                                                              \
+        : (_redisAssertWithInfo(_c, _o, #_e, __FILE__, __LINE__), _exit(1)))
+#define redisAssert(_e)                                                        \
+  ((_e) ? (void)0 : (_redisAssert(#_e, __FILE__, __LINE__), _exit(1)))
+#define redisPanic(_e) _redisPanic(#_e, __FILE__, __LINE__), _exit(1)
+
+//#define redisAssert(_e) ((_e)?(void)0 : (assert(_e),_exit(1)))
+//#define redisPanic(_e) ((_e)?(void)0 : (assert(_e),_exit(1)))
 
 /* Commands prototypes */
 void authCommand(redisClient *c);
@@ -440,6 +485,52 @@ void pfcountCommand(redisClient *c);
 void pfmergeCommand(redisClient *c);
 void pfdebugCommand(redisClient *c);
 
-
+/* Redis object implementation */
+void decrRefCount(robj *o);
+void decrRefCountVoid(void *o);
+void incrRefCount(robj *o);
+robj *resetRefCount(robj *obj);
+void freeStringObject(robj *o);
+void freeListObject(robj *o);
+void freeSetObject(robj *o);
+void freeZsetObject(robj *o);
+void freeHashObject(robj *o);
+robj *createObject(int type, void *ptr);
+robj *createStringObject(char *ptr, size_t len);
+robj *createRawStringObject(char *ptr, size_t len);
+robj *createEmbeddedStringObject(char *ptr, size_t len);
+robj *dupStringObject(robj *o);
+int isObjectRepresentableAsLongLong(robj *o, long long *llongval);
+robj *tryObjectEncoding(robj *o);
+robj *getDecodedObject(robj *o);
+size_t stringObjectLen(robj *o);
+robj *createStringObjectFromLongLong(long long value);
+robj *createStringObjectFromLongDouble(long double value);
+robj *createListObject(void);
+robj *createZiplistObject(void);
+robj *createSetObject(void);
+robj *createIntsetObject(void);
+robj *createHashObject(void);
+robj *createZsetObject(void);
+robj *createZsetZiplistObject(void);
+int getLongFromObjectOrReply(redisClient *c, robj *o, long *target,
+                             const char *msg);
+int checkType(redisClient *c, robj *o, int type);
+int getLongLongFromObjectOrReply(redisClient *c, robj *o, long long *target,
+                                 const char *msg);
+int getDoubleFromObjectOrReply(redisClient *c, robj *o, double *target,
+                               const char *msg);
+int getLongLongFromObject(robj *o, long long *target);
+int getLongDoubleFromObject(robj *o, long double *target);
+int getLongDoubleFromObjectOrReply(redisClient *c, robj *o, long double *target,
+                                   const char *msg);
+char *strEncoding(int encoding);
+int compareStringObjects(robj *a, robj *b);
+int collateStringObjects(robj *a, robj *b);
+int equalStringObjects(robj *a, robj *b);
+unsigned long long estimateObjectIdleTime(robj *o);
+#define sdsEncodedObject(objptr)                                               \
+  (objptr->encoding == REDIS_ENCODING_RAW ||                                   \
+   objptr->encoding == REDIS_ENCODING_EMBSTR)
 
 #endif // REDIS_H_
