@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <sys/time.h>
 
+struct sharedObjectsStruct shared;
+
 // Global vars
 struct redisServer server;
 struct redisCommand *commandTable;
@@ -122,22 +124,22 @@ struct redisCommand *commandTable;
  */
 struct redisCommand redisCommandTable[] = {
     {"get", getCommand, 2, "r", 0, NULL, 1, 1, 1, 0, 0},
-    {"set", setCommand, -3, "wm", 0, NULL, 1, 1, 1, 0, 0}
-    //    {"setnx", setnxCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"setex", setexCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"psetex", psetexCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"append", appendCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"strlen", strlenCommand, 2, "r", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"del", delCommand, -2, "w", 0, NULL, 1, -1, 1, 0, 0},
-    //    {"exists", existsCommand, 2, "r", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"setbit", setbitCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"getbit", getbitCommand, 3, "r", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"setrange", setrangeCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"getrange", getrangeCommand, 4, "r", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"substr", getrangeCommand, 4, "r", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"incr", incrCommand, 2, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"decr", decrCommand, 2, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"mget", mgetCommand, -2, "r", 0, NULL, 1, -1, 1, 0, 0},
+    {"set", setCommand, -3, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    {"setnx", setnxCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    {"setex", setexCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"psetex", psetexCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"append", appendCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"strlen", strlenCommand, 2, "r", 0, NULL, 1, 1, 1, 0, 0},
+    //{"del", delCommand, -2, "w", 0, NULL, 1, -1, 1, 0, 0},
+    //{"exists", existsCommand, 2, "r", 0, NULL, 1, 1, 1, 0, 0},
+    //{"setbit", setbitCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"getbit", getbitCommand, 3, "r", 0, NULL, 1, 1, 1, 0, 0},
+    //{"setrange", setrangeCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"getrange", getrangeCommand, 4, "r", 0, NULL, 1, 1, 1, 0, 0},
+    //{"substr", getrangeCommand, 4, "r", 0, NULL, 1, 1, 1, 0, 0},
+    //{"incr", incrCommand, 2, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"decr", decrCommand, 2, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"mget", mgetCommand, -2, "r", 0, NULL, 1, -1, 1, 0, 0},
     //    {"rpush", rpushCommand, -3, "wm", 0, NULL, 1, 1, 1, 0, 0},
     //    {"lpush", lpushCommand, -3, "wm", 0, NULL, 1, 1, 1, 0, 0},
     //    {"rpushx", rpushxCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
@@ -216,12 +218,12 @@ struct redisCommand redisCommandTable[] = {
     //    {"hgetall", hgetallCommand, 2, "r", 0, NULL, 1, 1, 1, 0, 0},
     //    {"hexists", hexistsCommand, 3, "r", 0, NULL, 1, 1, 1, 0, 0},
     //    {"hscan", hscanCommand, -3, "rR", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"incrby", incrbyCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"decrby", decrbyCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"incrbyfloat", incrbyfloatCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"getset", getsetCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"mset", msetCommand, -3, "wm", 0, NULL, 1, -1, 2, 0, 0},
-    //    {"msetnx", msetnxCommand, -3, "wm", 0, NULL, 1, -1, 2, 0, 0},
+    //{"incrby", incrbyCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"decrby", decrbyCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"incrbyfloat", incrbyfloatCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"getset", getsetCommand, 3, "wm", 0, NULL, 1, 1, 1, 0, 0},
+    //{"mset", msetCommand, -3, "wm", 0, NULL, 1, -1, 2, 0, 0},
+    //{"msetnx", msetnxCommand, -3, "wm", 0, NULL, 1, -1, 2, 0, 0},
     //    {"randomkey", randomkeyCommand, 1, "rR", 0, NULL, 0, 0, 0, 0, 0},
     //    {"select", selectCommand, 2, "rl", 0, NULL, 0, 0, 0, 0, 0},
     //    {"move", moveCommand, 3, "w", 0, NULL, 1, 1, 1, 0, 0},
@@ -235,8 +237,6 @@ struct redisCommand redisCommandTable[] = {
     //    {"scan", scanCommand, -2, "rR", 0, NULL, 0, 0, 0, 0, 0},
     //    {"dbsize", dbsizeCommand, 1, "r", 0, NULL, 0, 0, 0, 0, 0},
     //    {"auth", authCommand, 2, "rslt", 0, NULL, 0, 0, 0, 0, 0},
-    //    {"ping", pingCommand, 1, "rt", 0, NULL, 0, 0, 0, 0, 0},
-    //    {"echo", echoCommand, 2, "r", 0, NULL, 0, 0, 0, 0, 0},
     //    {"save", saveCommand, 1, "ars", 0, NULL, 0, 0, 0, 0, 0},
     //    {"bgsave", bgsaveCommand, 1, "ar", 0, NULL, 0, 0, 0, 0, 0},
     //    {"bgrewriteaof", bgrewriteaofCommand, 1, "ar", 0, NULL, 0, 0, 0, 0,
@@ -296,7 +296,9 @@ struct redisCommand redisCommandTable[] = {
     //    {"pfadd", pfaddCommand, -2, "wm", 0, NULL, 1, 1, 1, 0, 0},
     //    {"pfcount", pfcountCommand, -2, "w", 0, NULL, 1, 1, 1, 0, 0},
     //    {"pfmerge", pfmergeCommand, -2, "wm", 0, NULL, 1, -1, 1, 0, 0},
-    //    {"pfdebug", pfdebugCommand, -3, "w", 0, NULL, 0, 0, 0, 0, 0}
+    //    {"pfdebug", pfdebugCommand, -3, "w", 0, NULL, 0, 0, 0, 0, 0},
+    {"ping", pingCommand, 1, "rt", 0, NULL, 0, 0, 0, 0, 0},
+    {"echo", echoCommand, 2, "r", 0, NULL, 0, 0, 0, 0, 0}
 };
 
 /* Return the UNIX time in microseconds */
@@ -336,7 +338,7 @@ int dictSdsKeyCompare(void *privdata, const void *key1, const void*key2) {
   if (l1 != l2) {
     return 0;;
   }
-  return memcmp(key1, key2, l1);
+  return memcmp(key1, key2, l1) == 0;
 }
 
 void dictSdsDestructor(void *privdata, void *val) {
@@ -464,6 +466,15 @@ void populateCommandTable(void) {
   }
 }
 
+void pingCommand(redisClient *c) {
+  // TODO
+  printf("PONG\n");
+}
+
+void echoCommand(redisClient *c) {
+  // TODO
+}
+
 void initServerConfig() {
   // 设置默认服务器频率
   server.hz = REDIS_DEFAULT_HZ;
@@ -522,6 +533,9 @@ void test() {
   redisClient *c;
   head = listFirst(server.clients);
   c = listNodeValue(head);
+  setCommand(c);
+
+  cli->argv[2] = createStringObject("helloworld", 10);
   setCommand(c);
 
 }

@@ -1,15 +1,76 @@
 #ifndef REDIS_H_
 #define REDIS_H_
 
-#include <unistd.h>
 #include <assert.h>
+#include <unistd.h>
 
+#include "adlist.h"
 #include "dict.h"
 #include "sds.h"
-#include "adlist.h"
 
-#define  REDIS_DEFAULT_HZ     10
-#define  REDIS_DEFAULT_DBNUM  16
+#define REDIS_OK 0
+#define REDIS_ERR -1
+
+/* 默认的服务器配置值 */
+#define REDIS_DEFAULT_HZ 10 // Time interrupt calls/sec.
+#define REDIS_MIN_HZ 1
+#define REDIS_MAX_HZ 500
+#define REDIS_SERVERPORT 6379 // TCP port
+#define REDIS_TCP_BACKLOG 511 // TCP listen backlog
+#define REDIS_MAXIDLETIME 0   // default client timeout: infinite
+#define REDIS_DEFAULT_DBNUM 16
+#define REDIS_CONFIGLINE_MAX 1024
+#define REDIS_DBCRON_DBS_PER_CALL 16
+#define REDIS_MAX_WRITE_PER_EVENT (1024 * 64)
+#define REDIS_SHARED_SELECT_CMDS 10
+#define REDIS_SHARED_INTEGERS 10000
+#define REDIS_SHARED_BULKHDR_LEN 32
+#define REDIS_MAX_LOGMSG_LEN     1024 // Default maximum length of syslog messages
+#define REDIS_AOF_REWRITE_PERC 100
+#define REDIS_AOF_REWRITE_MIN_SIZE (64 * 1024 * 1024)
+#define REDIS_AOF_REWRITE_ITEMS_PER_CMD 64
+#define REDIS_SLOWLOG_LOG_SLOWER_THAN 10000
+#define REDIS_SLOWLOG_MAX_LEN 128
+#define REDIS_MAX_CLIENTS 10000
+#define REDIS_AUTHPASS_MAX_LEN 512
+#define REDIS_DEFAULT_SLAVE_PRIORITY 100
+#define REDIS_REPL_TIMEOUT 60
+#define REDIS_REPL_PING_SLAVE_PERIOD 10
+#define REDIS_RUN_ID_SIZE 40
+#define REDIS_OPS_SEC_SAMPLES 16
+#define REDIS_DEFAULT_REPL_BACKLOG_SIZE (1024 * 1024)   // 1mb
+#define REDIS_DEFAULT_REPL_BACKLOG_TIME_LIMIT (60 * 60) // 1 hour
+#define REDIS_REPL_BACKLOG_MIN_SIZE (1024 * 16)         // 16k
+#define REDIS_BGSAVE_RETRY_DELAY 5 // Wait a few secs before trying again.
+#define REDIS_DEFAULT_PID_FILE "/var/run/redis.pid"
+#define REDIS_DEFAULT_SYSLOG_IDENT "redis"
+#define REDIS_DEFAULT_CLUSTER_CONFIG_FILE "nodes.conf"
+#define REDIS_DEFAULT_DAEMONIZE 0
+#define REDIS_DEFAULT_UNIX_SOCKET_PERM 0
+#define REDIS_DEFAULT_TCP_KEEPALIVE 0
+#define REDIS_DEFAULT_LOGFILE ""
+#define REDIS_DEFAULT_SYSLOG_ENABLED 0
+#define REDIS_DEFAULT_STOP_WRITES_ON_BGSAVE_ERROR 1
+#define REDIS_DEFAULT_RDB_COMPRESSION 1
+#define REDIS_DEFAULT_RDB_CHECKSUM 1
+#define REDIS_DEFAULT_RDB_FILENAME "dump.rdb"
+#define REDIS_DEFAULT_SLAVE_SERVE_STALE_DATA 1
+#define REDIS_DEFAULT_SLAVE_READ_ONLY 1
+#define REDIS_DEFAULT_REPL_DISABLE_TCP_NODELAY 0
+#define REDIS_DEFAULT_MAXMEMORY 0
+#define REDIS_DEFAULT_MAXMEMORY_SAMPLES 5
+#define REDIS_DEFAULT_AOF_FILENAME "appendonly.aof"
+#define REDIS_DEFAULT_AOF_NO_FSYNC_ON_REWRITE 0
+#define REDIS_DEFAULT_ACTIVE_REHASHING 1
+#define REDIS_DEFAULT_AOF_REWRITE_INCREMENTAL_FSYNC 1
+#define REDIS_DEFAULT_MIN_SLAVES_TO_WRITE 0
+#define REDIS_DEFAULT_MIN_SLAVES_MAX_LAG 10
+#define REDIS_IP_STR_LEN INET6_ADDRSTRLEN
+#define REDIS_PEER_ID_LEN                                                      \
+  (REDIS_IP_STR_LEN + 32) // Must be enough for ip:port
+#define REDIS_BINDADDR_MAX 16
+#define REDIS_MIN_RESERVED_FDS 32
+
 // 命令标志
 #define  REDIS_CMD_WRITE            1     /* "w" flag  */
 #define  REDIS_CMD_READONLY         2     /* "r" flag  */
@@ -160,6 +221,20 @@ typedef struct redisClient
 
 } redisClient;
 
+
+struct sharedObjectsStruct {
+  robj *crlf, *ok, *err, *emptybulk, *czero, *cone, *cnegone, *pong, *space,
+      *colon, *nullbulk, *nullmultibulk, *queued, *emptymultibulk,
+      *wrongtypeerr, *nokeyerr, *syntaxerr, *sameobjecterr, *outofrangeerr,
+      *noscripterr, *loadingerr, *slowscripterr, *bgsaveerr, *masterdownerr,
+      *roslaveerr, *execaborterr, *noautherr, *noreplicaserr, *busykeyerr,
+      *oomerr, *plus, *messagebulk, *pmessagebulk, *subscribebulk,
+      *unsubscribebulk, *psubscribebulk, *punsubscribebulk, *del, *rpop, *lpop,
+      *lpush, *emptyscan, *minstring, *maxstring,
+      *select[REDIS_SHARED_SELECT_CMDS], *integers[REDIS_SHARED_INTEGERS],
+      *mbulkhdr[REDIS_SHARED_BULKHDR_LEN], /* "*<value>\r\n" */
+      *bulkhdr[REDIS_SHARED_BULKHDR_LEN];  /* "$<value>\r\n" */
+};
 
 // redis服务器
 struct redisServer

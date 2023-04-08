@@ -168,9 +168,6 @@ dictEntry *dictAddRaw(dict *d, void *key) {
 // 将给定的键值对添加到字典中 如果键已经存在 那么替换 返回 0 否则返回 1
 int dictReplace(dict *d, void *key, void *val) {
   dictEntry *entry, auxentry;
-  if (dictAdd(d, key, val) == DICT_OK) {
-    return 1;
-  }
 
   // 尝试直接添加
   if (dictAdd(d, key, val) == DICT_OK) {
@@ -327,7 +324,6 @@ dictEntry *dictFind(dict *d, const void *key) {
 
   // 计算键的哈希值
   h = dictHashKey(d, key);
-
   // 遍历两个哈希表
   for (table = 0;table <= 1; table++) {
     // 计算哈希值
