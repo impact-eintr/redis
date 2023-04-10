@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <unistd.h>
 
+#include "ae.h"
 #include "adlist.h"
 #include "dict.h"
 #include "sds.h"
@@ -71,6 +72,17 @@
 #define REDIS_BINDADDR_MAX 16
 #define REDIS_MIN_RESERVED_FDS 32
 
+// 指示 AOF 程序每累积这个量的写入数据
+// 就执行一次显式的 fsync
+#define REDIS_AOF_AUTOSYNC_BYTES (1024 * 1024 * 32) /* fdatasync every 32MB */
+/* When configuring the Redis eventloop, we setup it so that the total number
+ * of file descriptors we can handle are server.maxclients + RESERVED_FDS +
+ * FDSET_INCR that is our safety margin. */
+#define REDIS_EVENTLOOP_FDSET_INCR (REDIS_MIN_RESERVED_FDS + 96)
+
+/* Hash table parameters */
+#define REDIS_HT_MINFILL 10 /* Minimal hash table fill 10% */
+
 // 命令标志
 #define  REDIS_CMD_WRITE            1     /* "w" flag  */
 #define  REDIS_CMD_READONLY         2     /* "r" flag  */
@@ -113,6 +125,17 @@
 #define REDIS_LRU_BITS 24
 #define REDIS_LRU_CLOCK_MAX ((1<<REDIS_LRU_BITS)-1) // Max value of obj->lru
 #define REDIS_LRU_CLOCK_RESOLUTION 1000
+
+#define redisAssertWithInfo(_c, _o, _e)                                        \
+  ((_e) ? (void)0                                                              \
+        : (_redisAssertWithInfo(_c, _o, #_e, __FILE__, __LINE__), _exit(1)))
+#define redisAssert(_e)                                                        \
+  ((_e) ? (void)0 : (_redisAssert(#_e, __FILE__, __LINE__), _exit(1)))
+#define redisPanic(_e) _redisPanic(#_e, __FILE__, __LINE__), _exit(1)
+
+typedef long long mstime_t;
+
+
 typedef struct redisObject {
   // 类型
   unsigned type:4;
@@ -252,8 +275,10 @@ struct redisServer
   // 命令表（无 rename 配置选项的作用）
   dict *orig_commands; /* Command table before command renaming. */
 
-  // TODO 事件状态
+  // 事件状态
+  aeEventLoop *el;
 
+  // 最近一次使用时钟
   unsigned lruclock:REDIS_LRU_BITS;
 
   int dbnum; // default is 16
@@ -262,6 +287,13 @@ struct redisServer
   list *clients_to_close; // 一个链表 保存了所有即将关闭的客户端
 
   redisClient *current_client; // 服务器的当前客户端 仅仅用于崩溃报告
+
+  // 自从上次SAVE执行以来 数据库被修改的次数
+  long long dirty;
+
+  // Limits
+  int maxclients;
+
 
 };
 
@@ -319,6 +351,16 @@ extern dictType shaScriptObjectDictType;
 extern double R_Zero, R_PosInf, R_NegInf, R_Nan;
 extern dictType hashDictType;
 extern dictType replScriptCacheDictType;
+
+/* Utils */
+long long ustime(void);
+long long mstime(void);
+void getRandomHexChars(char *p, unsigned int len);
+uint64_t crc64(uint64_t crc, const unsigned char *s, uint64_t l);
+void exitFromChild(int retcode);
+size_t redisPopcount(void *s, long count);
+void redisSetProcTitle(char *title);
+
 
 // 开区间 闭区间
 typedef struct
@@ -386,22 +428,6 @@ unsigned int delKeysInSlot(unsigned int hashslot);
 int verifyClusterConfigWithData(void);
 void scanGenericCommand(redisClient *c, robj *o, unsigned long cursor);
 int parseScanCursorOrReply(redisClient *c, robj *o, unsigned long *cursor);
-
-/* Debugging stuff */
-void _redisAssertWithInfo(redisClient *c, robj *o, char *estr, char *file,
-                          int line);
-void _redisAssert(char *estr, char *file, int line);
-void _redisPanic(char *msg, char *file, int line);
-
-#define redisAssertWithInfo(_c, _o, _e)                                        \
-  ((_e) ? (void)0                                                              \
-        : (_redisAssertWithInfo(_c, _o, #_e, __FILE__, __LINE__), _exit(1)))
-#define redisAssert(_e)                                                        \
-  ((_e) ? (void)0 : (_redisAssert(#_e, __FILE__, __LINE__), _exit(1)))
-#define redisPanic(_e) _redisPanic(#_e, __FILE__, __LINE__), _exit(1)
-
-//#define redisAssert(_e) ((_e)?(void)0 : (assert(_e),_exit(1)))
-//#define redisPanic(_e) ((_e)?(void)0 : (assert(_e),_exit(1)))
 
 /* Commands prototypes */
 void authCommand(redisClient *c);
@@ -607,5 +633,72 @@ unsigned long long estimateObjectIdleTime(robj *o);
 #define sdsEncodedObject(objptr)                                               \
   (objptr->encoding == REDIS_ENCODING_RAW ||                                   \
    objptr->encoding == REDIS_ENCODING_EMBSTR)
+
+/* networking.c -- Networking and Client related operations */
+redisClient *createClient(int fd);
+void closeTimedoutClients(void);
+void freeClient(redisClient *c);
+void freeClientAsync(redisClient *c);
+void resetClient(redisClient *c);
+void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask);
+void addReply(redisClient *c, robj *obj);
+void *addDeferredMultiBulkLength(redisClient *c);
+void setDeferredMultiBulkLength(redisClient *c, void *node, long length);
+void addReplySds(redisClient *c, sds s);
+void processInputBuffer(redisClient *c);
+void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask);
+void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask);
+void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask);
+void addReplyBulk(redisClient *c, robj *obj);
+void addReplyBulkCString(redisClient *c, char *s);
+void addReplyBulkCBuffer(redisClient *c, void *p, size_t len);
+void addReplyBulkLongLong(redisClient *c, long long ll);
+void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask);
+void addReply(redisClient *c, robj *obj);
+void addReplySds(redisClient *c, sds s);
+void addReplyError(redisClient *c, char *err);
+void addReplyStatus(redisClient *c, char *status);
+void addReplyDouble(redisClient *c, double d);
+void addReplyLongLong(redisClient *c, long long ll);
+void addReplyMultiBulkLen(redisClient *c, long length);
+void copyClientOutputBuffer(redisClient *dst, redisClient *src);
+void *dupClientReplyValue(void *o);
+void getClientsMaxBuffers(unsigned long *longest_output_list,
+                          unsigned long *biggest_input_buffer);
+void formatPeerId(char *peerid, size_t peerid_len, char *ip, int port);
+char *getClientPeerId(redisClient *client);
+sds catClientInfoString(sds s, redisClient *client);
+sds getAllClientsInfoString(void);
+void rewriteClientCommandVector(redisClient *c, int argc, ...);
+void rewriteClientCommandArgument(redisClient *c, int i, robj *newval);
+unsigned long getClientOutputBufferMemoryUsage(redisClient *c);
+void freeClientsInAsyncFreeQueue(void);
+void asyncCloseClientOnOutputBufferLimitReached(redisClient *c);
+int getClientLimitClassByName(char *name);
+char *getClientLimitClassName(int class);
+void flushSlavesOutputBuffers(void);
+void disconnectSlaves(void);
+int listenToPort(int port, int *fds, int *count);
+void pauseClients(mstime_t duration);
+int clientsArePaused(void);
+int processEventsWhileBlocked(void);
+
+#ifdef __GNUC__
+void addReplyErrorFormat(redisClient *c, const char *fmt, ...)
+  __attribute__((format(printf, 2, 3)));
+void addReplyStatusFormat(redisClient *c, const char *fmt, ...)
+  __attribute__((format(printf, 2, 3)));
+#else
+void addReplyErrorFormat(redisClient *c, const char *fmt, ...);
+void addReplyStatusFormat(redisClient *c, const char *fmt, ...);
+#endif
+
+/* Debugging stuff */
+void _redisAssertWithInfo(redisClient *c, robj *o, char *estr, char *file,
+                          int line);
+void _redisAssert(char *estr, char *file, int line);
+void _redisPanic(char *msg, char *file, int line);
+
+
 
 #endif // REDIS_H_

@@ -1,4 +1,7 @@
+#include "color.h"
 #include "redis.h"
+#include <assert.h>
+#include <stdio.h>
 
 /* The setGenericCommand() function implements the SET operation with different
  * options and variants. This function is called in order to implement the
@@ -36,14 +39,39 @@
 #define REDIS_SET_XX (1 << 1) /* Set if key exists. */
 
 void setGenericCommand(redisClient *c, int flags, robj *key, robj *val,
-                       robj *expire, int uint, robj *ok_reply,
+                       robj *expire, int unit, robj *ok_reply,
                        robj *abort_reply) {
   long long milliseconds = 0;
 
-  // TODO
+  if (expire) {
+    if (getLongLongFromObjectOrReply(c, expire, &milliseconds, NULL) != REDIS_OK) {
+      return;
+    }
+
+    if (milliseconds <= 0) {
+      addReplyError(c, "invalid expire time in SETEX");
+      return;
+    }
+
+    if (unit == UNIT_SECONDS)
+      milliseconds *= 1000;
+
+  }
+
+  // 如果设置了 NX 或者 XX 参数，那么检查条件是否不符合这两个设置
+  // 在条件不符合时报错，报错的内容由 abort_reply 参数决定
+  if ((flags & REDIS_SET_NX && lookupKeyWrite(c->db, key) != NULL) ||
+      (flags & REDIS_SET_XX && lookupKeyWrite(c->db, key) == NULL)) {
+    addReply(c, abort_reply ? abort_reply : shared.nullbulk);
+    return;
+  }
 
   // 将键值对关联到数据库
   setKey(c->db, key, val);
+
+  server.dirty++;
+  if (expire)
+    setExpire(c->db, key, mstime()+milliseconds);
 }
 
 /* SET key value [NX] [XX] [EX <seconds>] [PX <milliseconds>] */
@@ -51,6 +79,34 @@ void setCommand(redisClient *c) {
   robj *expire = NULL;
   int unit = UNIT_SECONDS;
   int flags = REDIS_SET_NO_FLAGS;
+
+  // 设置选项参数
+  for (int j = 3; j < c->argc; j++) {
+    char *a = c->argv[j]->ptr;
+    robj *next = (j == c->argc - 1) ? NULL : c->argv[j + 1];
+
+    if ((a[0] == 'n' || a[0] == 'N') && (a[1] == 'x' || a[1] == 'X') &&
+        a[2] == '\0') {
+      flags |= REDIS_SET_NX;
+    } else if ((a[0] == 'x' || a[0] == 'X') && (a[1] == 'x' || a[1] == 'X') &&
+               a[2] == '\0') {
+      flags |= REDIS_SET_XX;
+    } else if ((a[0] == 'e' || a[0] == 'E') && (a[1] == 'x' || a[1] == 'X') &&
+               a[2] == '\0' && next) {
+      unit = UNIT_SECONDS;
+      expire = next;
+      j++;
+    } else if ((a[0] == 'p' || a[0] == 'P') && (a[1] == 'x' || a[1] == 'X') &&
+               a[2] == '\0' && next) {
+      unit = UNIT_MILLISECONDS;
+      expire = next;
+      j++;
+    } else {
+      addReply(c, shared.syntaxerr);
+      return;
+    }
+  }
+
   // 尝试编码
   c->argv[2] = tryObjectEncoding(c->argv[2]);
 
@@ -93,5 +149,8 @@ int getGenericCommand(redisClient *c) {
     // TODO addReplyBulk(c, o);
     return REDIS_OK;
   }
+}
 
-  void getCommand(redisClient * c) { getGenericCommand(c); }
+void getCommand(redisClient * c) {
+  getGenericCommand(c);
+}

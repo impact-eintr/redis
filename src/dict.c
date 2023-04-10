@@ -175,6 +175,8 @@ int dictReplace(dict *d, void *key, void *val) {
   }
 
   entry = dictFind(d, key);
+
+  printf("覆写 %d\n", *(int *)dictGetVal(entry));
   // 先保存原有的值的指针
   auxentry = *entry;
   // 然后设置新的值

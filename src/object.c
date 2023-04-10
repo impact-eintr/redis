@@ -3,6 +3,10 @@
 #include "sds.h"
 #include "zmalloc.h"
 
+#include <limits.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -133,12 +137,83 @@ robj *tryObjectEncoding(robj *o) {
 
 robj *getDecodedObject(robj *o);
 size_t stringObjectLen(robj *o);
-robj *createStringObjectFromLongLong(long long value);
-robj *createStringObjectFromLongDouble(long double value);
-robj *createListObject(void);
+
+robj *createStringObjectFromLongLong(long long value) {
+  robj *o;
+
+  if (value >= 0 && value < REDIS_SHARED_INTEGERS) {
+    // 使用共享对象
+    incrRefCount(shared.integers[value]);
+    o = shared.integers[value];
+  } else {
+    if (value >= LONG_MIN && value <= LONG_MAX) {
+      o = createObject(REDIS_STRING, NULL);
+      o->encoding = REDIS_ENCODING_INT;
+      o->ptr = (void*)((long)value);
+    } else { // long long 使用 REDIS_ENCODING_RAW 来保存
+      o = createObject(REDIS_STRING, sdsfromlonglong(value));
+    }
+  }
+
+  return o;
+}
+
+robj *createStringObjectFromLongDouble(long double value) {
+
+}
+
+robj *createListObject(void) {
+
+}
+
 robj *createZiplistObject(void);
 robj *createSetObject(void);
 robj *createIntsetObject(void);
 robj *createHashObject(void);
 robj *createZsetObject(void);
 robj *createZsetZiplistObject(void);
+
+
+int getLongFromObjectOrReply(redisClient *c, robj *o, long *target,
+                             const char *msg);
+int checkType(redisClient *c, robj *o, int type);
+
+int getLongLongFromObjectOrReply(redisClient *c, robj *o, long long *target,
+                                 const char *msg) {
+  long long value;
+  char *eptr;
+
+  if (o == NULL) {
+    value = 0;
+  } else {
+    redisAssertWithInfo(NULL, o, o->type == REDIS_STRING);
+    if (sdsEncodedObject(o)) {
+      errno = 0;
+      // T = O(N)
+      value = strtoll(o->ptr, &eptr, 10);
+      if (isspace(((char *)o->ptr)[0]) || eptr[0] != '\0' || errno == ERANGE)
+        return REDIS_ERR;
+
+    } else if (o->encoding == REDIS_ENCODING_INT) {
+      value = (long)o->ptr;
+    } else {
+      redisPanic("Unknown string encoding");
+    }
+  }
+  if (target)
+    *target = value;
+
+  return REDIS_OK;
+}
+
+int getDoubleFromObjectOrReply(redisClient *c, robj *o, double *target,
+                               const char *msg);
+int getLongLongFromObject(robj *o, long long *target);
+int getLongDoubleFromObject(robj *o, long double *target);
+int getLongDoubleFromObjectOrReply(redisClient *c, robj *o, long double *target,
+                                   const char *msg);
+char *strEncoding(int encoding);
+int compareStringObjects(robj *a, robj *b);
+int collateStringObjects(robj *a, robj *b);
+int equalStringObjects(robj *a, robj *b);
+unsigned long long estimateObjectIdleTime(robj *o);

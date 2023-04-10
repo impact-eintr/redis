@@ -4,15 +4,42 @@
 
 #include <stdio.h>
 
-int removeExpire(redisDb *db, robj *key);
-void propagateExpire(redisDb *db, robj *key);
+int removeExpire(redisDb *db, robj *key) {
+
+}
+
+void propagateExpire(redisDb *db, robj *key) {
+
+}
 
 int expireIfNeeded(redisDb *db, robj *key) {
   return 0;
 }
 
-long long getExpire(redisDb *db, robj *key);
-void setExpire(redisDb *db, robj *key, long long when);
+long long getExpire(redisDb *db, robj *key) {
+  dictEntry *de;
+
+  if (dictSize(db->expires) == 0 || (de = dictFind(db->expires, key->ptr)) == NULL) {
+    return -1;
+  }
+
+  redisAssertWithInfo(NULL, key, dictFind(db->dict, key->ptr) != NULL);
+
+  // 返回过期时间
+  return dictGetSignedIntegerVal(de);
+}
+
+void setExpire(redisDb *db, robj *key, long long when) {
+  dictEntry  *kde, *de;
+
+  kde = dictFind(db->dict, key->ptr);
+
+  redisAssertWithInfo(NULL, key, key != NULL);
+
+  de = dictReplaceRaw(db->dict, dictGetKey(kde));
+
+  dictSetSignedIntegerVal(de, when); // 设置键的过期时间
+}
 
 robj *lookupKey(redisDb *db, robj *key) {
   // 查找键空间
@@ -27,7 +54,21 @@ robj *lookupKey(redisDb *db, robj *key) {
   }
 }
 
-robj *lookupKeyRead(redisDb *db, robj *key);
+robj *lookupKeyRead(redisDb *db, robj *key) {
+  robj *val;
+
+  // 检查key是否过期
+  expireIfNeeded(db, key);
+  val = lookupKey(db, key);
+
+  if (val == NULL) {
+    // TODO 更新状态
+  } else {
+
+  }
+
+  return val;
+}
 
 robj *lookupKeyWrite(redisDb *db, robj *key) {
   // 过期机制
@@ -41,7 +82,7 @@ robj *lookupKeyReadOrReply(redisClient *c, robj *key, robj *reply) {
       robj *o = lookupKeyRead(c->db, key);
 
       // 决定是否发送信息
-      if (!o) addReply(c,reply);
+      //if (!o) addReply(c,reply);
 
       return o;
 
@@ -66,6 +107,7 @@ void dbOverwrite(redisDb *db, robj *key, robj *val) {
   redisAssertWithInfo(NULL, key, de != NULL);
 
   // 覆写旧值
+  printf("%s\n", (char *)val->ptr);
   dictReplace(db->dict, key->ptr, val);
 }
 

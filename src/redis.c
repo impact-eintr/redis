@@ -1,5 +1,6 @@
 #include "redis.h"
 #include "adlist.h"
+#include "ae.h"
 #include "dict.h"
 #include "zmalloc.h"
 
@@ -165,11 +166,9 @@ struct redisCommand redisCommandTable[] = {
     //    {"spop", spopCommand, 2, "wRs", 0, NULL, 1, 1, 1, 0, 0},
     //    {"srandmember", srandmemberCommand, -2, "rR", 0, NULL, 1, 1, 1, 0, 0},
     //    {"sinter", sinterCommand, -2, "rS", 0, NULL, 1, -1, 1, 0, 0},
-    //    {"sinterstore", sinterstoreCommand, -3, "wm", 0, NULL, 1, -1, 1, 0,
-    //    0},
+    //    {"sinterstore", sinterstoreCommand, -3, "wm", 0, NULL, 1, -1, 1, 0, 0},
     //    {"sunion", sunionCommand, -2, "rS", 0, NULL, 1, -1, 1, 0, 0},
-    //    {"sunionstore", sunionstoreCommand, -3, "wm", 0, NULL, 1, -1, 1, 0,
-    //    0},
+    //    {"sunionstore", sunionstoreCommand, -3, "wm", 0, NULL, 1, -1, 1, 0, 0},
     //    {"sdiff", sdiffCommand, -2, "rS", 0, NULL, 1, -1, 1, 0, 0},
     //    {"sdiffstore", sdiffstoreCommand, -3, "wm", 0, NULL, 1, -1, 1, 0, 0},
     //    {"smembers", sinterCommand, 2, "rS", 0, NULL, 1, 1, 1, 0, 0},
@@ -177,19 +176,15 @@ struct redisCommand redisCommandTable[] = {
     //    {"zadd", zaddCommand, -4, "wm", 0, NULL, 1, 1, 1, 0, 0},
     //    {"zincrby", zincrbyCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
     //    {"zrem", zremCommand, -3, "w", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"zremrangebyscore", zremrangebyscoreCommand, 4, "w", 0, NULL, 1, 1,
-    //    1, 0, 0},
-    //    {"zremrangebyrank", zremrangebyrankCommand, 4, "w", 0, NULL, 1, 1, 1,
-    //    0, 0},
-    //    {"zremrangebylex", zremrangebylexCommand, 4, "w", 0, NULL, 1, 1, 1, 0,
-    //    0},
+    //    {"zremrangebyscore", zremrangebyscoreCommand, 4, "w", 0, NULL, 1, 1, 1, 0, 0},
+    //    {"zremrangebyrank", zremrangebyrankCommand, 4, "w", 0, NULL, 1, 1, 1, 0, 0},
+    //    {"zremrangebylex", zremrangebylexCommand, 4, "w", 0, NULL, 1, 1, 1, 0, 0},
     //    {"zunionstore", zunionstoreCommand, -4, "wm", 0, zunionInterGetKeys,
     //    0, 0, 0, 0, 0},
     //    {"zinterstore", zinterstoreCommand, -4, "wm", 0, zunionInterGetKeys,
     //    0, 0, 0, 0, 0},
     //    {"zrange", zrangeCommand, -4, "r", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"zrangebyscore", zrangebyscoreCommand, -4, "r", 0, NULL, 1, 1, 1, 0,
-    //    0},
+    //    {"zrangebyscore", zrangebyscoreCommand, -4, "r", 0, NULL, 1, 1, 1, 0, 0},
     //    {"zrevrangebyscore", zrevrangebyscoreCommand, -4, "r", 0, NULL, 1, 1,
     //    1, 0, 0},
     //    {"zrangebylex", zrangebylexCommand, -4, "r", 0, NULL, 1, 1, 1, 0, 0},
@@ -209,8 +204,7 @@ struct redisCommand redisCommandTable[] = {
     //    {"hmset", hmsetCommand, -4, "wm", 0, NULL, 1, 1, 1, 0, 0},
     //    {"hmget", hmgetCommand, -3, "r", 0, NULL, 1, 1, 1, 0, 0},
     //    {"hincrby", hincrbyCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"hincrbyfloat", hincrbyfloatCommand, 4, "wm", 0, NULL, 1, 1, 1, 0,
-    //    0},
+    //    {"hincrbyfloat", hincrbyfloatCommand, 4, "wm", 0, NULL, 1, 1, 1, 0, 0},
     //    {"hdel", hdelCommand, -3, "w", 0, NULL, 1, 1, 1, 0, 0},
     //    {"hlen", hlenCommand, 2, "r", 0, NULL, 1, 1, 1, 0, 0},
     //    {"hkeys", hkeysCommand, 2, "rS", 0, NULL, 1, 1, 1, 0, 0},
@@ -387,6 +381,20 @@ dictType commandTableDictType = {
 };
 /*          COMMAND TABLE DICT          */
 
+
+/*             KEY PTR DICT           */
+
+dictType keyptrDictType = {
+    dictSdsHash,
+    NULL,                  /* key dup */
+    NULL,                  /* val dup */
+    dictSdsKeyCompare, /* key compare */
+    NULL,                  /* key destructor */
+    NULL                   /* val destructor */
+};
+
+/*             KEY PTR DICT           */
+
 // 根据 redis.c 文件顶部的命令列表，创建命令表
 void populateCommandTable(void) {
   int j;
@@ -475,10 +483,99 @@ void echoCommand(redisClient *c) {
   // TODO
 }
 
+// ======================= 服务初始化 ========================
+void createSharedObjects() {
+  int j;
+  // 常用回复
+  shared.crlf = createObject(REDIS_STRING, sdsnew("\r\n"));
+  shared.ok = createObject(REDIS_STRING, sdsnew("+OK\r\n"));
+  shared.err = createObject(REDIS_STRING, sdsnew("-ERR\r\n"));
+  shared.emptybulk = createObject(REDIS_STRING, sdsnew("$0\r\n\r\n"));
+  shared.czero = createObject(REDIS_STRING, sdsnew(":0\r\n"));
+  shared.cone = createObject(REDIS_STRING, sdsnew(":1\r\n"));
+  shared.cnegone = createObject(REDIS_STRING, sdsnew(":-1\r\n"));
+  shared.nullbulk = createObject(REDIS_STRING, sdsnew("$-1\r\n"));
+  shared.nullmultibulk = createObject(REDIS_STRING, sdsnew("*-1\r\n"));
+  shared.emptymultibulk = createObject(REDIS_STRING, sdsnew("*0\r\n"));
+  shared.pong = createObject(REDIS_STRING, sdsnew("+PONG\r\n"));
+  shared.queued = createObject(REDIS_STRING, sdsnew("+QUEUED\r\n"));
+  shared.emptyscan =
+      createObject(REDIS_STRING, sdsnew("*2\r\n$1\r\n0\r\n*0\r\n"));
+  // 常用错误回复
+  shared.wrongtypeerr =
+      createObject(REDIS_STRING, sdsnew("-WRONGTYPE Operation against a key "
+                                        "holding the wrong kind of value\r\n"));
+  shared.nokeyerr = createObject(REDIS_STRING, sdsnew("-ERR no such key\r\n"));
+  shared.syntaxerr =
+      createObject(REDIS_STRING, sdsnew("-ERR syntax error\r\n"));
+  shared.sameobjecterr = createObject(
+      REDIS_STRING,
+      sdsnew("-ERR source and destination objects are the same\r\n"));
+  shared.outofrangeerr =
+      createObject(REDIS_STRING, sdsnew("-ERR index out of range\r\n"));
+  shared.noscripterr = createObject(
+      REDIS_STRING,
+      sdsnew("-NOSCRIPT No matching script. Please use EVAL.\r\n"));
+  shared.loadingerr = createObject(
+      REDIS_STRING,
+      sdsnew("-LOADING Redis is loading the dataset in memory\r\n"));
+  shared.slowscripterr = createObject(
+      REDIS_STRING, sdsnew("-BUSY Redis is busy running a script. You can only "
+                           "call SCRIPT KILL or SHUTDOWN NOSAVE.\r\n"));
+  shared.masterdownerr = createObject(
+      REDIS_STRING, sdsnew("-MASTERDOWN Link with MASTER is down and "
+                           "slave-serve-stale-data is set to 'no'.\r\n"));
+  shared.bgsaveerr = createObject(
+      REDIS_STRING,
+      sdsnew("-MISCONF Redis is configured to save RDB snapshots, but is "
+             "currently not able to persist on disk. Commands that may modify "
+             "the data    set are disabled. Please check Redis logs for "
+             "details about the error.\r\n"));
+  shared.roslaveerr = createObject(
+      REDIS_STRING,
+      sdsnew("-READONLY You can't write against a read only slave.\r\n"));
+  shared.noautherr = createObject(
+      REDIS_STRING, sdsnew("-NOAUTH Authentication required.\r\n"));
+  shared.oomerr = createObject(
+      REDIS_STRING,
+      sdsnew("-OOM command not allowed when used memory > 'maxmemory'.\r\n"));
+  shared.execaborterr = createObject(
+      REDIS_STRING,
+      sdsnew(
+          "-EXECABORT Transaction discarded because of previous errors.\r\n"));
+  shared.noreplicaserr = createObject(
+      REDIS_STRING, sdsnew("-NOREPLICAS Not enough good slaves to write.\r\n"));
+  shared.busykeyerr = createObject(
+      REDIS_STRING, sdsnew("-BUSYKEY Target key name already exists.\r\n"));
+
+  // 常用字符
+  shared.space = createObject(REDIS_STRING, sdsnew(" "));
+  shared.colon = createObject(REDIS_STRING, sdsnew(":"));
+  shared.plus = createObject(REDIS_STRING, sdsnew("+"));
+
+  // TODO 常用SELECT命令
+
+  // 常用命令
+  shared.del = createStringObject("DEL", 3);
+  shared.rpop = createStringObject("RPOP", 4);
+  shared.lpop = createStringObject("LPOP", 4);
+  shared.lpush = createStringObject("LPUSH", 5);
+
+  // 常用整数
+  for (j = 0; j < REDIS_SHARED_INTEGERS; j++) {
+    shared.integers[j] = createObject(REDIS_STRING, (void *)(long)j);
+    shared.integers[j]->encoding = REDIS_ENCODING_INT;
+  }
+
+  // TODO 其他
+}
+
 void initServerConfig() {
   // 设置默认服务器频率
   server.hz = REDIS_DEFAULT_HZ;
   server.dbnum = REDIS_DEFAULT_DBNUM;
+
+  server.maxclients = REDIS_MAX_CLIENTS;
 
   server.commands = dictCreate(&commandTableDictType, NULL);
   server.orig_commands = dictCreate(&commandTableDictType, NULL);
@@ -499,12 +596,15 @@ void initServer() {
     server.clients = listCreate();
     server.clients_to_close = listCreate();
 
+    // 创建共享对象
+    createSharedObjects();
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
+    server.el = aeCreateEventLoop(server.maxclients + REDIS_EVENTLOOP_FDSET_INCR);
 
     // 创建并初始化数据库结构
     for (j = 0; j < server.dbnum; j++) {
       server.db[j].dict = dictCreate(&dbDictType, NULL);
-      //server.db[j].expires = dictCreate(&keyptrDictType, NULL);
+      server.db[j].expires = dictCreate(&keyptrDictType, NULL);
       //server.db[j].blocking_keys = dictCreate(&keylistDictType, NULL);
       //server.db[j].ready_keys = dictCreate(&setDictType, NULL);
       //server.db[j].watched_keys = dictCreate(&keylistDictType, NULL);
@@ -520,10 +620,13 @@ void initServer() {
 
 void test() {
   redisClient *cli = zmalloc(sizeof(redisClient));
-  robj *argv[3];
+  robj *argv[5];
   argv[0] = createStringObject("SET", 3);
   argv[1] = createStringObject("key", 3);
   argv[2] = createStringObject("value", 5);
+  argv[3] = createStringObject("ex", 2);
+  argv[4] = createStringObjectFromLongLong(5);
+  cli->argc = 5;
   cli->argv = argv;
   cli->db = server.db;
 
