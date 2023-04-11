@@ -47,6 +47,7 @@ robj *lookupKey(redisDb *db, robj *key) {
   if (de) {
     robj *val = dictGetVal(de);
 
+    printf("找到 %s\n", (char *)val->ptr);
     // TODO 更新时间
     return val;
   } else {

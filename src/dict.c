@@ -170,13 +170,13 @@ int dictReplace(dict *d, void *key, void *val) {
   dictEntry *entry, auxentry;
 
   // 尝试直接添加
+  printf("替换中\n");
   if (dictAdd(d, key, val) == DICT_OK) {
     return 1;
   }
 
   entry = dictFind(d, key);
 
-  printf("覆写 %d\n", *(int *)dictGetVal(entry));
   // 先保存原有的值的指针
   auxentry = *entry;
   // 然后设置新的值
@@ -683,6 +683,7 @@ static int _dictKeyIndex(dict *d, const void *key) {
     he = d->ht[table].table[idx];
     while (he) {
       if (dictCompareKeys(d, key, he->key)) {
+        printf("找到了 %s\n", (char *)he->key);
         return -1;
       }
       he = he->next;

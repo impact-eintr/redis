@@ -346,6 +346,7 @@ void dictRedisObjectDestructor(void *privdata, void *val) {
   if (val == NULL) {
     return;
   }
+  printf("销毁中\n");
   decrRefCount(val); // 共享对象
 }
 
