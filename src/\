@@ -86,6 +86,7 @@ int dictExpand(dict *d, unsigned long size){
   // 新的哈希表
   dictht n;
   unsigned long realsize = _dictNextPower(size);
+  printf("扩容中 %ld\n", realsize);
   if (dictIsRehashing(d) || d->ht[0].used > size) {
     return DICT_ERR;
   }
@@ -169,6 +170,7 @@ int dictReplace(dict *d, void *key, void *val) {
   dictEntry *entry, auxentry;
 
   // 尝试直接添加
+  printf("替换中\n");
   if (dictAdd(d, key, val) == DICT_OK) {
     return 1;
   }
@@ -681,6 +683,7 @@ static int _dictKeyIndex(dict *d, const void *key) {
     he = d->ht[table].table[idx];
     while (he) {
       if (dictCompareKeys(d, key, he->key)) {
+        printf("找到了 %p\n", dictGetVal(he));
         return -1;
       }
       he = he->next;
@@ -755,6 +758,7 @@ int dictRehash(dict *d, int n) {
       // 关闭 rehash 标识
       d->rehashidx = -1;
       // 返回 0 ，向调用者表示 rehash 已经完成
+      printf("rehash 完成 扩容至 %ld\n", d->ht[0].size);
       return 0;
     }
 

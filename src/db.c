@@ -36,7 +36,7 @@ void setExpire(redisDb *db, robj *key, long long when) {
 
   redisAssertWithInfo(NULL, key, key != NULL);
 
-  de = dictReplaceRaw(db->dict, dictGetKey(kde));
+  de = dictReplaceRaw(db->expires, dictGetKey(kde));
 
   dictSetSignedIntegerVal(de, when); // 设置键的过期时间
 }
@@ -47,7 +47,6 @@ robj *lookupKey(redisDb *db, robj *key) {
   if (de) {
     robj *val = dictGetVal(de);
 
-    printf("找到 %s\n", (char *)val->ptr);
     // TODO 更新时间
     return val;
   } else {
@@ -108,7 +107,6 @@ void dbOverwrite(redisDb *db, robj *key, robj *val) {
   redisAssertWithInfo(NULL, key, de != NULL);
 
   // 覆写旧值
-  printf("%s\n", (char *)val->ptr);
   dictReplace(db->dict, key->ptr, val);
 }
 

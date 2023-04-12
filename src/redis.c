@@ -346,7 +346,6 @@ void dictRedisObjectDestructor(void *privdata, void *val) {
   if (val == NULL) {
     return;
   }
-  printf("销毁中\n");
   decrRefCount(val); // 共享对象
 }
 
@@ -637,6 +636,7 @@ void test() {
   redisClient *c;
   head = listFirst(server.clients);
   c = listNodeValue(head);
+
   setCommand(c);
 
   cli->argv[2] = createStringObject("helloworld", 10);

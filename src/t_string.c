@@ -66,7 +66,6 @@ void setGenericCommand(redisClient *c, int flags, robj *key, robj *val,
     return;
   }
 
-  printf("%p\n", val);
   // 将键值对关联到数据库
   setKey(c->db, key, val);
 
