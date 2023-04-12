@@ -72,6 +72,11 @@ void setGenericCommand(redisClient *c, int flags, robj *key, robj *val,
   server.dirty++;
   if (expire)
     setExpire(c->db, key, mstime()+milliseconds);
+
+  // TODO 发送事件通知
+
+
+  addReply(c, ok_reply ? ok_reply : shared.ok);
 }
 
 /* SET key value [NX] [XX] [EX <seconds>] [PX <milliseconds>] */
@@ -142,7 +147,7 @@ int getGenericCommand(redisClient *c) {
   // 值对象存在，检查它的类型
   if (o->type != REDIS_STRING) {
     // 类型错误
-    // TODO addReply(c, shared.wrongtypeerr);
+    addReply(c, shared.wrongtypeerr);
     return REDIS_ERR;
   } else {
     // 类型正确，向客户端返回对象的值
@@ -154,3 +159,5 @@ int getGenericCommand(redisClient *c) {
 void getCommand(redisClient * c) {
   getGenericCommand(c);
 }
+
+

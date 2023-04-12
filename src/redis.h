@@ -288,8 +288,93 @@ struct redisServer
 
   redisClient *current_client; // 服务器的当前客户端 仅仅用于崩溃报告
 
-  // 自从上次SAVE执行以来 数据库被修改的次数
-  long long dirty;
+
+  // AOF persistence
+  int aof_state;                  /* REDIS_AOF_(ON|OFF|WAIT_REWRITE) */
+
+  // 所使用的 fsync 策略（每个写入/每秒/从不）
+  int aof_fsync;                  /* Kind of fsync() policy */
+  char *aof_filename;             /* Name of the AOF file */
+  int aof_no_fsync_on_rewrite;    /* Don't fsync if a rewrite is in prog. */
+  int aof_rewrite_perc;           /* Rewrite AOF if % growth is > M and... */
+  off_t aof_rewrite_min_size;     /* the AOF file is at least N bytes. */
+
+  // 最后一次执行 BGREWRITEAOF 时， AOF 文件的大小
+  off_t aof_rewrite_base_size;    /* AOF size on latest startup or rewrite. */
+
+  // AOF 文件的当前字节大小
+  off_t aof_current_size;         /* AOF current size. */
+  int aof_rewrite_scheduled;      /* Rewrite once BGSAVE terminates. */
+
+  // 负责进行 AOF 重写的子进程 ID
+  pid_t aof_child_pid;            /* PID if rewriting process */
+
+  // AOF 重写缓存链表，链接着多个缓存块
+  list *aof_rewrite_buf_blocks;   /* Hold changes during an AOF rewrite. */
+
+  // AOF 缓冲区
+  sds aof_buf;      /* AOF buffer, written before entering the event loop */
+
+  // AOF 文件的描述符
+  int aof_fd;       /* File descriptor of currently selected AOF file */
+
+  // AOF 的当前目标数据库
+  int aof_selected_db; /* Currently selected DB in AOF */
+
+  // 推迟 write 操作的时间
+  time_t aof_flush_postponed_start; /* UNIX time of postponed AOF flush */
+
+  // 最后一直执行 fsync 的时间
+  time_t aof_last_fsync;            /* UNIX time of last fsync() */
+  time_t aof_rewrite_time_last;   /* Time used by last AOF rewrite run. */
+
+  // AOF 重写的开始时间
+  time_t aof_rewrite_time_start;  /* Current AOF rewrite start time. */
+
+  // 最后一次执行 BGREWRITEAOF 的结果
+  int aof_lastbgrewrite_status;   /* REDIS_OK or REDIS_ERR */
+
+  // 记录 AOF 的 write 操作被推迟了多少次
+  unsigned long aof_delayed_fsync;  /* delayed AOF fsync() counter */
+
+  // 指示是否需要每写入一定量的数据，就主动执行一次 fsync()
+  int aof_rewrite_incremental_fsync;/* fsync incrementally while rewriting? */
+  int aof_last_write_status;      /* REDIS_OK or REDIS_ERR */
+  int aof_last_write_errno;       /* Valid if aof_last_write_status is ERR */
+
+/* RDB persistence */
+
+  // 自从上次 SAVE 执行以来，数据库被修改的次数
+  long long dirty;                /* Changes to DB from the last save */
+
+  // BGSAVE 执行前的数据库被修改次数
+  long long dirty_before_bgsave;  /* Used to restore dirty on failed BGSAVE */
+
+  // 负责执行 BGSAVE 的子进程的 ID
+  // 没在执行 BGSAVE 时，设为 -1
+  pid_t rdb_child_pid;            /* PID of RDB saving child */
+  struct saveparam *saveparams;   /* Save points array for RDB */
+  int saveparamslen;              /* Number of saving points */
+  char *rdb_filename;             /* Name of RDB file */
+  int rdb_compression;            /* Use compression in RDB? */
+  int rdb_checksum;               /* Use RDB checksum? */
+
+  // 最后一次完成 SAVE 的时间
+  time_t lastsave;                /* Unix time of last successful save */
+
+  // 最后一次尝试执行 BGSAVE 的时间
+  time_t lastbgsave_try;          /* Unix time of last attempted bgsave */
+
+  // 最近一次 BGSAVE 执行耗费的时间
+  time_t rdb_save_time_last;      /* Time used by last RDB save run. */
+
+  // 数据库最近一次开始执行 BGSAVE 的时间
+  time_t rdb_save_time_start;     /* Current RDB save start time. */
+
+  // 最后一次执行 SAVE 的状态
+  int lastbgsave_status;          /* REDIS_OK or REDIS_ERR */
+  int stop_writes_on_bgsave_err;  /* Don't allow writes if can't BGSAVE */
+
 
   // Limits
   int maxclients;

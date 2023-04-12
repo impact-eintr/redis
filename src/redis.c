@@ -612,9 +612,10 @@ void initServer() {
       server.db[j].id = j;
       server.db[j].avg_ttl = 0;
     }
+
+    server.rdb_child_pid = -1;
+    server.aof_child_pid = -1;
 }
-
-
 
 #if 1
 
@@ -625,7 +626,7 @@ void test() {
   argv[1] = createStringObject("key", 3);
   argv[2] = createStringObject("value", 5);
   argv[3] = createStringObject("ex", 2);
-  argv[4] = createStringObjectFromLongLong(5);
+  argv[4] = createStringObjectFromLongLong(2);
   cli->argc = 5;
   cli->argv = argv;
   cli->db = server.db;
@@ -639,8 +640,13 @@ void test() {
 
   setCommand(c);
 
-  cli->argv[2] = createStringObject("helloworld", 10);
-  setCommand(c);
+  sleep(1);
+
+  cli->argc = 3;
+  cli->argv[0] = createStringObject("GET", 3);
+  cli->argv[1] = createStringObject("key", 3);
+  cli->argv[2] = createStringObject("value", 5);
+  getCommand(c);
 
 }
 

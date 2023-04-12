@@ -13,7 +13,7 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask);
 
 // 为客户端安装写处理器到事件循环
 void addReply(redisClient *c, robj *obj) {
-  printf("测试");
+  printf("测试 %s\n", (char *)obj->ptr);
 }
 
 void *addDeferredMultiBulkLength(redisClient *c);

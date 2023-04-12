@@ -187,7 +187,7 @@ int dictReplace(dict *d, void *key, void *val) {
 }
 
 /*
- * dictAddRaw() 根据给定 key 释放存在，执行以下动作：
+ * dictAddRaw() 根据给定 key 是否存在，执行以下动作：
  *
  * 1) key 已经存在，返回包含该 key 的字典节点
  * 2) key 不存在，那么将 key 添加到字典
