@@ -281,6 +281,47 @@ struct redisServer
   // 最近一次使用时钟
   unsigned lruclock:REDIS_LRU_BITS;
 
+  /* Fields used only for stats */
+
+  // 服务器启动时间
+  time_t stat_starttime;          /* Server start time */
+
+  // 已处理命令的数量
+  long long stat_numcommands;     /* Number of processed commands */
+
+  // 服务器接到的连接请求数量
+  long long stat_numconnections;  /* Number of connections received */
+
+  // 已过期的键数量
+  long long stat_expiredkeys;     /* Number of expired keys */
+
+  // 因为回收内存而被释放的过期键的数量
+  long long stat_evictedkeys;     /* Number of evicted keys (maxmemory) */
+
+  // 成功查找键的次数
+  long long stat_keyspace_hits;   /* Number of successful lookups of keys */
+
+  // 查找键失败的次数
+  long long stat_keyspace_misses; /* Number of failed lookups of keys */
+
+  // 已使用内存峰值
+  size_t stat_peak_memory;        /* Max used memory record */
+
+  // 最后一次执行 fork() 时消耗的时间
+  long long stat_fork_time;       /* Time needed to perform latest fork() */
+
+  // 服务器因为客户端数量过多而拒绝客户端连接的次数
+  long long stat_rejected_conn;   /* Clients rejected because of maxclients */
+
+  // 执行 full sync 的次数
+  long long stat_sync_full;       /* Number of full resyncs with slaves. */
+
+  // PSYNC 成功执行的次数
+  long long stat_sync_partial_ok; /* Number of accepted PSYNC requests. */
+
+  // PSYNC 执行失败的次数
+  long long stat_sync_partial_err;/* Number of unaccepted PSYNC requests. */
+
   int dbnum; // default is 16
 
   list *clients; // 一个链表 保存了所有客户端状态

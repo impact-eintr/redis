@@ -1,8 +1,54 @@
 #include "ae.h"
 
+#include "zmalloc.h"
+
 #include <stdio.h>
 
+/* Include the best multiplexing layer supported by this system.
+ * The following should be ordered by performances, descending. */
+#ifdef HAVE_EPOLL
+#include "ae_epoll.c"
+#endif
+
 aeEventLoop *aeCreateEventLoop(int setsize) {
+  aeEventLoop *eventLoop;
+
+  if ((eventLoop = zmalloc(sizeof(*eventLoop))) == NULL)
+    goto err;
+
+  // 初始化文件事件
+  eventLoop->events = zmalloc(sizeof(aeFileEvent) * setsize);
+  eventLoop->fired = zmalloc(sizeof(aeFiredEvent) * setsize);
+  if (eventLoop->events == NULL || eventLoop->fired == NULL) {
+    goto err;
+  }
+
+  eventLoop->setsize = setsize;
+  eventLoop->lastTime = time(NULL); // 最近一次执行时间
+
+  // 初始化时间事件
+  eventLoop->timeEventHead = NULL;
+  eventLoop->timeEventNextId = 0;
+
+  eventLoop->stop = 0;
+  eventLoop->maxfd = -1;
+  eventLoop->beforesleep = NULL;
+  if (aeApiCreate(eventLoop) == -1) {
+    goto err;
+  }
+
+  // 初始化监听事件
+  for (int i = 0;i < setsize;i++) {
+    eventLoop->events[i].mask = AE_NONE;
+  }
+  return eventLoop;
+
+err:
+  if (eventLoop) {
+    zfree(eventLoop->events);
+    zfree(eventLoop->fired);
+    zfree(eventLoop);
+  }
   return NULL;
 }
 

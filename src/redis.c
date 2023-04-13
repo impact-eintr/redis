@@ -617,6 +617,12 @@ void initServer() {
     server.aof_child_pid = -1;
 }
 
+// 每次处理事件前执行
+void beforeSleep(struct aeEventLoop *eventLoop) {
+  // TODO
+}
+
+
 #if 1
 
 void test() {
@@ -655,9 +661,17 @@ int main(int argc, char **argv) {
     initServerConfig();
     initServer();
 
+    // 运行事件处理器，一直到服务器关闭为止
+    aeSetBeforeSleepProc(server.el, beforeSleep);
+    aeMain(server.el);
+
+    // 服务器关闭，停止事件循环
+    aeDeleteEventLoop(server.el);
 
     // TODO 运行事件处理器直到服务器关闭为止
     test();
+
+    return 0;
 }
 
 #endif

@@ -1,5 +1,6 @@
 #include "color.h"
 #include "redis.h"
+#include "util.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -32,7 +33,7 @@ void addReply(redisClient *c, robj *obj);
 void addReplySds(redisClient *c, sds s);
 
 // 将 c String 中的内容复制到回复缓冲区
-void addReplyString(redisClient *c,char *s, size_t len) {
+void addReplyString(redisClient *c, char *s, size_t len) {
   // TODO
   printf(REDSTR("%s"), s);
 }
@@ -43,14 +44,79 @@ void addReplyErrorLength(redisClient *c, char *s, size_t len) {
   addReplyString(c, "\r\n", 2);
 }
 
-
 void addReplyError(redisClient *c, char *err) {
   addReplyErrorLength(c, err, strlen(err));
 }
 
-void addReplyStatus(redisClient *c, char *status);
+void addReplyStatusLength(redisClient *c, char *s, size_t len) {
+  addReplyString(c, "+", 1);
+  addReplyString(c, s, len);
+  addReplyString(c, "\r\n", 2);
+}
+
+/*
+ * 返回一个状态回复
+ *
+ * 例子 +OK\r\n
+ */
+void addReplyStatus(redisClient *c, char *status) {
+  addReplyStatusLength(c, status, strlen(status));
+}
+
 void addReplyDouble(redisClient *c, double d);
-void addReplyLongLong(redisClient *c, long long ll);
+
+/* Add a long long as integer reply or bulk len / multi bulk count.
+ *
+ * 添加一个 long long 为整数回复，或者 bulk 或 multi bulk 的数目
+ *
+ * Basically this is used to output <prefix><long long><crlf>.
+ *
+ * 输出格式为 <prefix><long long><crlf>
+ *
+ * 例子:
+ *
+ * *5\r\n10086\r\n
+ *
+ * $5\r\n10086\r\n
+ */
+void addReplyLongLongWithPrefix(redisClient *c, long long ll, char prefix) {
+  char buf[128];
+  int len;
+
+  /* Things like $3\r\n or *2\r\n are emitted very often by the protocol
+   * so we have a few shared objects to use if the integer is small
+   * like it is most of the times. */
+  if (prefix == '*' && ll < REDIS_SHARED_BULKHDR_LEN) {
+    // 多条批量回复
+    addReply(c, shared.mbulkhdr[ll]);
+    return;
+  } else if (prefix == '$' && ll < REDIS_SHARED_BULKHDR_LEN) {
+    // 批量回复
+    addReply(c, shared.bulkhdr[ll]);
+    return;
+  }
+
+  buf[0] = prefix;
+  len = ll2string(buf + 1, sizeof(buf) - 1, ll);
+  buf[len + 1] = '\r';
+  buf[len + 2] = '\n';
+  addReplyString(c, buf, len + 3);
+}
+
+/*
+ * 返回一个整数回复
+ *
+ * 格式为 :10086\r\n
+ */
+void addReplyLongLong(redisClient *c, long long ll) {
+  if (ll == 0)
+    addReply(c, shared.czero);
+  else if (ll == 1)
+    addReply(c, shared.cone);
+  else
+    addReplyLongLongWithPrefix(c, ll, ':');
+}
+
 void addReplyMultiBulkLen(redisClient *c, long length);
 void copyClientOutputBuffer(redisClient *dst, redisClient *src);
 void *dupClientReplyValue(void *o);

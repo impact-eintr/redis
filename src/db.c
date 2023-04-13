@@ -2,6 +2,9 @@
 #include "redis.h"
 #include "sds.h"
 
+#include <ctype.h>
+#include <stdlib.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -88,8 +91,10 @@ robj *lookupKeyRead(redisDb *db, robj *key) {
   val = lookupKey(db, key);
 
   if (val == NULL) {
+    server.stat_keyspace_misses++;
     // TODO 更新状态
   } else {
+    server.stat_keyspace_hits++;
     printf("找到了\n");
   }
 
@@ -116,9 +121,15 @@ robj *lookupKeyReadOrReply(redisClient *c, robj *key, robj *reply) {
 }
 
 robj *lookupKeyWriteOrReply(redisClient *c, robj *key, robj *reply) {
-  // TODO 涉及事件机制
+  // 查找
+  robj *o = lookupKeyWrite(c->db, key);
 
+  // 决定是否发送信息
+  if (!o) {
+    addReply(c,reply);
+  }
 
+  return o;
 }
 
 void dbAdd(redisDb *db, robj *key, robj *val) {
@@ -174,15 +185,30 @@ int dbDelete(redisDb *db, robj *key) {
 robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o);
 long long emptyDb(void(callback)(void*));
 int selectDb(redisClient *c, int id);
-void signalModifiedKey(redisDb *db, robj *key);
+
+void signalModifiedKey(redisDb *db, robj *key) {
+  // TODO
+}
 void signalFlushedDb(int dbid);
 unsigned int getKeysInSlot(unsigned int hashslot, robj **keys, unsigned int count);
 unsigned int countKeysInSlot(unsigned int hashslot);
 unsigned int delKeysInSlot(unsigned int hashslot);
 int verifyClusterConfigWithData(void);
 void scanGenericCommand(redisClient *c, robj *o, unsigned long cursor);
-int parseScanCursorOrReply(redisClient *c, robj *o, unsigned long *cursor);
 
+int parseScanCursorOrReply(redisClient *c, robj *o, unsigned long *cursor) {
+  char *eptr;
+
+  /* Use strtoul() because we need an *unsigned* long, so
+   * getLongLongFromObject() does not cover the whole cursor space. */
+  errno = 0;
+  *cursor = strtoul(o->ptr, &eptr, 10);
+  if (isspace(((char *)o->ptr)[0]) || eptr[0] != '\0' || errno == ERANGE) {
+    addReplyError(c, "invalid cursor");
+    return REDIS_ERR;
+  }
+  return REDIS_OK;
+}
 
 /*=========================== 类型无关的数据库操作 =========================*/
 
@@ -192,6 +218,22 @@ void flushdbCommand(redisClient *c) {
 
 void flushallCommand(redisClient *c) {
 
+}
+
+void delCommand(redisClient *c) {
+  int deleted = 0, j;
+
+  // 遍历所有输入键
+  for (j = 1;j < c->argc;j++) {
+    // 先删除过期的键
+    expireIfNeeded(c->db, c->argv[j]);
+    // 尝试删除
+    if (dbDelete(c->db, c->argv[j])) {
+      signalModifiedKey(c->db, c->argv[j]);
+      server.dirty++;
+      deleted++;
+    }
+  }
 }
 
 void existsCommand(redisClient *c) {
