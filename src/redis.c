@@ -666,7 +666,7 @@ int main(int argc, char **argv) {
     aeMain(server.el);
 
     // 服务器关闭，停止事件循环
-    aeDeleteEventLoop(server.el);
+    //aeDeleteEventLoop(server.el);
 
     // TODO 运行事件处理器直到服务器关闭为止
     test();
