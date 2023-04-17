@@ -183,8 +183,19 @@ int dbDelete(redisDb *db, robj *key) {
 }
 
 robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o);
-long long emptyDb(void(callback)(void*));
-int selectDb(redisClient *c, int id);
+long long emptyDb(void(callback)(void*)) {
+
+}
+
+int selectDb(redisClient *c, int id) {
+  if (id < 0 || id >= server.dbnum) {
+    return REDIS_ERR;
+  }
+
+  c->db = &server.db[id];
+
+  return REDIS_OK;
+}
 
 void signalModifiedKey(redisDb *db, robj *key) {
   // TODO

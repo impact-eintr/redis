@@ -626,7 +626,8 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
 #if 1
 
 void test() {
-  redisClient *cli = zmalloc(sizeof(redisClient));
+  redisClient *cli = createClient();
+
   robj *argv[5];
   argv[0] = createStringObject("SET", 3);
   argv[1] = createStringObject("key", 3);
@@ -661,15 +662,15 @@ int main(int argc, char **argv) {
     initServerConfig();
     initServer();
 
+    test();
+
     // 运行事件处理器，一直到服务器关闭为止
     aeSetBeforeSleepProc(server.el, beforeSleep);
     aeMain(server.el);
 
     // 服务器关闭，停止事件循环
-    //aeDeleteEventLoop(server.el);
+    aeDeleteEventLoop(server.el);
 
-    // TODO 运行事件处理器直到服务器关闭为止
-    test();
 
     return 0;
 }

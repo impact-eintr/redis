@@ -238,6 +238,11 @@ typedef struct redisClient
   // 当前正在使用的数据库的 id （号码）
   int dictid;
 
+  robj *name; // 客户端名称
+
+  sds querybyf; // 查询缓冲区
+  size_t querybuf_peak; // 查询缓冲区长度峰值
+
   // 参数
   int argc;
   robj **argv;

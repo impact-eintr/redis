@@ -3,6 +3,8 @@
 #include "zmalloc.h"
 #include "config.h"
 
+#include <poll.h>
+#include <string.h>
 #include <time.h>
 #include <errno.h>
 #include <sys/time.h>
@@ -149,34 +151,91 @@ static void aeGetTime(long *seconds, long *milliseconds) {
  * 在当前时间上加上 milliseconds 毫秒，
  * 并且将加上之后的秒数和毫秒数分别保存在 sec 和 ms 指针中。
  */
-static void aeAddMillisecondsToNow(long long milliseconds, long *sec, long *ms) {
-    long cur_sec, cur_ms, when_sec, when_ms;
+static void aeAddMillisecondsToNow(long long milliseconds, long *sec,
+                                   long *ms) {
+  long cur_sec, cur_ms, when_sec, when_ms;
 
-    // 获取当前时间
-    aeGetTime(&cur_sec, &cur_ms);
+  // 获取当前时间
+  aeGetTime(&cur_sec, &cur_ms);
 
-    // 计算增加 milliseconds 之后的秒数和毫秒数
-    when_sec = cur_sec + milliseconds/1000;
-    when_ms = cur_ms + milliseconds%1000;
+  // 计算增加 milliseconds 之后的秒数和毫秒数
+  when_sec = cur_sec + milliseconds / 1000;
+  when_ms = cur_ms + milliseconds % 1000;
 
-    // 进位：
-    // 如果 when_ms 大于等于 1000
-    // 那么将 when_sec 增大一秒
-    if (when_ms >= 1000) {
-        when_sec ++;
-        when_ms -= 1000;
-    }
+  // 进位：
+  // 如果 when_ms 大于等于 1000
+  // 那么将 when_sec 增大一秒
+  if (when_ms >= 1000) {
+    when_sec++;
+    when_ms -= 1000;
+  }
 
-    // 保存到指针中
-    *sec = when_sec;
-    *ms = when_ms;
+  // 保存到指针中
+  *sec = when_sec;
+  *ms = when_ms;
 }
-
 
 long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,
                             aeTimeProc *proc, void *clientData,
-                            aeEventFinalizerProc *finalizerProc);
-int aeDeleteTimeEvent(aeEventLoop *eventLoop, long long id);
+                            aeEventFinalizerProc *finalizerProc) {
+  // 更新时间计数器
+  long long id = eventLoop->timeEventNextId++;
+
+  // 创建时间事件结构
+  aeTimeEvent *te;
+
+  te = zmalloc(sizeof(*te));
+  if (te == NULL)
+    return AE_ERR;
+
+  // 设置 ID
+  te->id = id;
+
+  // 设定处理事件的时间
+  aeAddMillisecondsToNow(milliseconds, &te->when_sec, &te->when_ms);
+  // 设置事件处理器
+  te->timeProc = proc;
+  te->finalizerProc = finalizerProc;
+  // 设置私有数据
+  te->clientData = clientData;
+
+  // 将新事件放入表头
+  te->next = eventLoop->timeEventHead;
+  eventLoop->timeEventHead = te;
+
+  return id;
+}
+
+int aeDeleteTimeEvent(aeEventLoop *eventLoop, long long id) {
+  aeTimeEvent *te, *prev = NULL;
+
+  // 遍历链表
+  te = eventLoop->timeEventHead;
+  while (te) {
+
+    // 发现目标事件，删除
+    if (te->id == id) {
+
+      if (prev == NULL)
+        eventLoop->timeEventHead = te->next;
+      else
+        prev->next = te->next;
+
+      // 执行清理处理器
+      if (te->finalizerProc)
+        te->finalizerProc(eventLoop, te->clientData);
+
+      // 释放时间事件
+      zfree(te);
+
+      return AE_OK;
+    }
+    prev = te;
+    te = te->next;
+  }
+
+  return AE_ERR; /* NO event with the specified ID found */
+}
 
 static aeTimeEvent *aeSearchNearestTimer(aeEventLoop *eventLoop) {
   aeTimeEvent *te = eventLoop->timeEventHead;
@@ -195,40 +254,66 @@ static aeTimeEvent *aeSearchNearestTimer(aeEventLoop *eventLoop) {
 
 // 处理所有已经到达的时间事件
 static int processTimeEvents(aeEventLoop *eventLoop) {
-    int processed = 0;
-    aeTimeEvent *te;
-    long long maxId;
-    time_t now = time(NULL);
+  int processed = 0;
+  aeTimeEvent *te;
+  long long maxId;
+  time_t now = time(NULL);
 
-    /* If the system clock is moved to the future, and then set back to the
-     * right value, time events may be delayed in a random way. Often this
-     * means that scheduled operations will not be performed soon enough.
-     *
-     * Here we try to detect system clock skews, and force all the time
-     * events to be processed ASAP when this happens: the idea is that
-     * processing events earlier is less dangerous than delaying them
-     * indefinitely, and practice suggests it is. */
-    // 通过重置事件的运行时间，
-    // 防止因时间穿插（skew）而造成的事件处理混乱
-    if (now < eventLoop->lastTime) {
-        te = eventLoop->timeEventHead;
-        while(te) {
-            te->when_sec = 0;
-            te = te->next;
-        }
-    }
-    // 更新最后一次处理时间事件的时间
-    eventLoop->lastTime = now;
-
-    // 遍历链表
-    // 执行那些已经到达的事件
+  // 通过重置事件的运行时间，
+  // 防止因时间穿插（skew）而造成的事件处理混乱
+  if (now < eventLoop->lastTime) {
     te = eventLoop->timeEventHead;
-    maxId = eventLoop->timeEventNextId-1;
-    while(te) {
-      // TODO
-      assert(0);
+    while (te) {
+      te->when_sec = 0;
+      te = te->next;
     }
-    return processed;
+  }
+  // 更新最后一次处理时间事件的时间
+  eventLoop->lastTime = now;
+
+  // 遍历链表
+  // 执行那些已经到达的事件
+  te = eventLoop->timeEventHead;
+  maxId = eventLoop->timeEventNextId - 1;
+  while (te) {
+    long now_sec, now_ms;
+    long long id;
+
+    // 跳过无效事件
+    if (te->id > maxId) {
+      te = te->next;
+      continue;
+    }
+
+    // 获取当前时间
+    aeGetTime(&now_sec, &now_ms);
+
+    // 如果当前时间等于或等于事件的执行时间，那么说明事件已到达，执行这个事件
+    if (now_sec > te->when_sec ||
+        (now_sec == te->when_sec && now_ms >= te->when_ms)) {
+      int retval;
+
+      id = te->id;
+      // 执行事件处理器，并获取返回值
+      retval = te->timeProc(eventLoop, id, te->clientData);
+      processed++;
+      // 记录是否有需要循环执行这个事件时间
+      if (retval != AE_NOMORE) {
+        // 是的， retval 毫秒之后继续执行这个时间事件
+        aeAddMillisecondsToNow(retval, &te->when_sec, &te->when_ms);
+      } else {
+        // 不，将这个事件删除
+        aeDeleteTimeEvent(eventLoop, id);
+      }
+
+      // 因为执行事件之后，事件列表可能已经被改变了
+      // 因此需要将 te 放回表头，继续开始执行事件
+      te = eventLoop->timeEventHead;
+    } else {
+      te = te->next; // 向后跳
+    }
+  }
+  return processed;
 }
 
 int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
@@ -319,13 +404,12 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
     return processed;
 }
 
+/* Wait for milliseconds until the given file descriptor becomes
+ * writable/readable/exception
+ *
+ * 在给定毫秒内等待，直到 fd 变成可写、可读或异常
+ */
 int aeWait(int fd, int mask, long long milliseconds) {
-    /* Wait for milliseconds until the given file descriptor becomes
-     * writable/readable/exception
-     *
-     * 在给定毫秒内等待，直到 fd 变成可写、可读或异常
-     */
-    int aeWait(int fd, int mask, long long milliseconds) {
     struct pollfd pfd;
     int retmask = 0, retval;
 
@@ -337,26 +421,25 @@ int aeWait(int fd, int mask, long long milliseconds) {
       pfd.events |= POLLOUT;
 
     if ((retval = poll(&pfd, 1, milliseconds)) == 1) {
-      if (pfd.revents & POLLIN)
-        retmask |= AE_READABLE;
-      if (pfd.revents & POLLOUT)
-        retmask |= AE_WRITABLE;
-      if (pfd.revents & POLLERR)
-        retmask |= AE_WRITABLE;
-      if (pfd.revents & POLLHUP)
-        retmask |= AE_WRITABLE;
-      return retmask;
+    if (pfd.revents & POLLIN)
+      retmask |= AE_READABLE;
+    if (pfd.revents & POLLOUT)
+      retmask |= AE_WRITABLE;
+    if (pfd.revents & POLLERR)
+      retmask |= AE_WRITABLE;
+    if (pfd.revents & POLLHUP)
+      retmask |= AE_WRITABLE;
+    return retmask;
     } else {
       return retval;
-    }
     }
 }
 
 void aeMain(aeEventLoop *eventLoop) {
 
-  eventLoop->stop = 0;
+    eventLoop->stop = 0;
 
-  while (!eventLoop->stop) {
+    while (!eventLoop->stop) {
     if (eventLoop->beforesleep != NULL) {
       eventLoop->beforesleep(eventLoop);
     }

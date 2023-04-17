@@ -1,16 +1,38 @@
 #include "color.h"
 #include "redis.h"
 #include "util.h"
+#include "ae.h"
+#include "zmalloc.h"
+
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
-redisClient *createClient(int fd);
+redisClient *createClient(int fd) {
+  redisClient *c = zmalloc(sizeof(redisClient));
+
+  // -1创建伪客户端 !-1 创建普通客户端
+  if (fd != -1) {
+  }
+
+  // 初始化属性
+  selectDb(c, 0);
+  c->fd = fd;
+  c->name = NULL;
+
+
+  return c;
+}
+
 void closeTimedoutClients(void);
 void freeClient(redisClient *c);
 void freeClientAsync(redisClient *c);
 void resetClient(redisClient *c);
-void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask);
+
+// 事件处理器 命令回复处理器
+void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
+
+}
 
 // 为客户端安装写处理器到事件循环
 void addReply(redisClient *c, robj *obj) {
@@ -21,9 +43,21 @@ void *addDeferredMultiBulkLength(redisClient *c);
 void setDeferredMultiBulkLength(redisClient *c, void *node, long length);
 void addReplySds(redisClient *c, sds s);
 void processInputBuffer(redisClient *c);
-void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask);
-void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask);
-void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask);
+
+// 事件处理器 连接应答处理器
+void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+
+}
+
+void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+
+}
+
+// 事件处理器 命令请求处理器
+void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
+
+}
+
 void addReplyBulk(redisClient *c, robj *obj);
 void addReplyBulkCString(redisClient *c, char *s);
 void addReplyBulkCBuffer(redisClient *c, void *p, size_t len);
