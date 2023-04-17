@@ -1,6 +1,7 @@
 #include "ae.h"
 #include "zmalloc.h"
 
+#include <bits/types/struct_timeval.h>
 #include <stdio.h>
 #include <sys/epoll.h>
 
@@ -11,7 +12,7 @@ typedef struct aeApiState
 } aeApiState;
 
 // 新建一个新的epoll实例
-int aeApiCreate(aeEventLoop *eventLoop)
+static int aeApiCreate(aeEventLoop *eventLoop)
 {
 
   aeApiState *state = zmalloc(sizeof(aeApiState));
@@ -96,6 +97,60 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask)
     return -1;
 
   return 0;
+}
+
+// 从fd中删除给定事件
+static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
+  aeApiState *state = eventLoop->apidata;
+  struct epoll_event ee;
+
+  int mask = eventLoop->events[fd].mask & (~delmask);
+
+  ee.events = 0;
+  if (mask & AE_READABLE)
+    ee.events |= EPOLLIN;
+  if (mask & AE_WRITABLE)
+    ee.events |= EPOLLOUT;
+  ee.data.u64 = 0; /* avoid valgrind warning */
+  ee.data.fd = fd;
+  if (mask != AE_NONE) {
+    epoll_ctl(state->epfd, EPOLL_CTL_MOD, fd, &ee);
+  } else {
+    /* Note, Kernel < 2.6.9 requires a non null event pointer even for
+     * EPOLL_CTL_DEL. */
+    epoll_ctl(state->epfd, EPOLL_CTL_DEL, fd, &ee);
+  }
+}
+
+// 获取可执行事件
+static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
+  aeApiState *state = eventLoop->apidata;
+  int retval, numevents = 0;
+
+  retval = epoll_wait(state->epfd, state->events, eventLoop->setsize,
+                      tvp ? (tvp->tv_sec * 1000 + tvp->tv_usec / 1000) : -1);
+  if (retval > 0) { // 至少有一个事件就绪
+    int j;
+
+    numevents = retval;
+    for (j = 0;j < numevents;j++) {
+      int mask = 0;
+      struct epoll_event *e = state->events+j;
+      if (e->events & EPOLLIN)
+        mask |= AE_READABLE;
+      if (e->events & EPOLLOUT)
+        mask |= AE_WRITABLE;
+      if (e->events & EPOLLERR)
+        mask |= AE_WRITABLE;
+      if (e->events & EPOLLHUP)
+        mask |= AE_WRITABLE;
+
+      eventLoop->fired[j].fd = e->data.fd;
+      eventLoop->fired[j].mask = mask;
+    }
+  }
+  // 返回已经就绪的事件个数
+  return numevents;
 }
 
 /*
