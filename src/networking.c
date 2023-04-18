@@ -7,7 +7,7 @@
 #include "zmalloc.h"
 #include "anet.h"
 
-#include <asm-generic/errno.h>
+#include <asm-generic/errno-base.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -67,7 +67,9 @@ void freeClientAsync(redisClient *c) {
 }
 
 // 重置客户端
-void resetClient(redisClient *c);
+void resetClient(redisClient *c) {
+
+}
 
 // 事件处理器 命令回复处理器
 void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -108,6 +110,7 @@ static void acceptCommonHandler(int fd, int flags) {
 
   // 设置Flag
   c->flags |= flags;
+  printf(YELLOWSTR("一个TCP连接到来\n"));
 }
 
 // 事件处理器 连接应答处理器
@@ -153,9 +156,173 @@ void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
   }
 }
 
+// 处理内联命令 并创建参数对象
+// <arg0> <arg1> <arg2> <arg3>\r\n
+int processInlineBuffer(redisClient *c) {
+  // 使用c->querybuf 填充c的部分字段
+  char *newline;
+  int argc, j;
+  sds *argv, aux;
+  size_t querylen;
+
+  newline = strchr(c->querybuf, '\n');
+  // 收到的查询内容不符合协议格式，出错
+  if (newline == NULL) {
+    if (sdslen(c->querybuf) > REDIS_INLINE_MAX_SIZE) {
+      addReplyError(c, "Protocol error: too big inline request");
+      //TODO setProtocolError(c, 0);
+    }
+    return REDIS_ERR;
+  }
+
+  /* Handle the \r\n case. */
+  if (newline && newline != c->querybuf && *(newline - 1) == '\r')
+    newline--;
+
+  /* Split the input buffer up to the \r\n */
+  // 根据空格，分割命令的参数
+  // 比如说 SET msg hello \r\n 将分割为
+  // argv[0] = SET
+  // argv[1] = msg
+  // argv[2] = hello
+  // argc = 3
+  querylen = newline - (c->querybuf);
+  aux = sdsnewlen(c->querybuf, querylen);
+  argv = sdssplitargs(aux, &argc);
+  printf("argc: %d\n", argc);
+  sdsfree(aux);
+  if (argv == NULL) {
+    addReplyError(c, "Protocol error: unbalanced quotes in request");
+    //setProtocolError(c, 0);
+    return REDIS_ERR;
+  }
+
+  /* Newline from slaves can be used to refresh the last ACK time.
+   * This is useful for a slave to ping back while loading a big
+   * RDB file. */
+  if (querylen == 0 && c->flags & REDIS_SLAVE) {
+    // TODO c->repl_ack_time = server.unixtime;
+  }
+
+  /* Leave data after the first line of the query in the buffer */
+
+  // 从缓冲区中删除已 argv 已读取的内容
+  // 剩余的内容是未读取的
+  sdsrange(c->querybuf, querylen + 2, -1);
+
+  /* Setup argv array on client structure */
+  // 为客户端的参数分配空间
+  if (c->argv) {
+    zfree(c->argv);
+  }
+  c->argv = zmalloc(sizeof(robj *) * argc);
+
+  // 为每个参数创建一个字符串对象
+  for (c->argc = 0,j = 0;j < argc;j++) {
+    if (sdslen(argv[j])) {
+      c->argv[c->argc] = createObject(REDIS_STRING, argv[j]);
+      c->argc++;
+    } else {
+      sdsfree(argv[j]);
+    }
+  }
+
+  zfree(argv);
+  return REDIS_OK;
+}
+
+int processMultibulkBuffer(redisClient *c) {
+  return REDIS_OK;
+}
+
+void processInputBuffer(redisClient *c) {
+  while(sdslen(c->querybuf)) {
+    // TODO 处理客户端在各种状态下的行为
+
+    // 简单来说，多条查询是一般客户端发送来的，
+    // 而内联查询则是 TELNET 发送来的
+    if (!c->reqtype) {
+      if (c->querybuf[0] == '*') {
+        // 多条查询
+        c->reqtype = REDIS_REQ_MULTIBULK;
+      } else {
+        // 内联查询
+        c->reqtype = REDIS_REQ_INLINE;
+      }
+    }
+
+    if (c->reqtype == REDIS_REQ_INLINE) {
+      if (processInlineBuffer(c) != REDIS_OK) {
+        break;
+      }
+    } else if (c->reqtype == REDIS_REQ_MULTIBULK) {
+      if (processMultibulkBuffer(c) != REDIS_OK) {
+        break;
+      }
+    } else {
+      redisPanic("Unknown request type");
+    }
+
+    if (c->argc == 0) {
+      resetClient(c);
+    } else {
+      if (processCommand(c) == REDIS_OK) {
+        resetClient(c);
+      }
+    }
+  }
+}
+
 // 事件处理器 命令请求处理器
 void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
+  redisClient *c = (redisClient *)privdata;
+  int nread, readlen;
+  size_t qblen;
+  REDIS_NOTUSED(el);
+  REDIS_NOTUSED(mask);
 
+  // 设置服务器当前处理的客户端
+  server.current_client = c;
+  readlen = REDIS_IOBUF_LEN;
+
+  // TODO
+
+  qblen = sdslen(c->querybuf);
+  if (c->querybuf_peak < qblen) {
+    c->querybuf_peak = qblen;
+  }
+  c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
+  nread = read(fd, c->querybuf+qblen, readlen); // 这里是一个阻塞的系统调用
+
+  if (nread == -1) { // 遇到EOF
+    if (errno == EAGAIN) {
+      nread = 0;
+    } else {
+      redisLog(REDIS_VERBOSE, "Reading from client: %s", strerror(errno));
+      freeClient(c);
+      return;
+    }
+  } else if (nread == 0) {
+    redisLog(REDIS_VERBOSE, "Client closed connection");
+    freeClient(c);
+    return;
+  }
+
+  if (nread) {
+    char s[nread];
+    snprintf(s, nread, "%s", c->querybuf+qblen);
+    printf("处理客户端请求 %s\n", s);
+
+    sdsIncrLen(c->querybuf, nread);
+    // TODO c->lastinteraction = server.unixtime;
+    // TODO 处理master 更新复制偏移量
+  } else {
+    server.current_client = NULL;
+    return;
+  }
+
+  processInputBuffer(c);
+  server.current_client = NULL;
 }
 
 void addReplyBulk(redisClient *c, robj *obj);

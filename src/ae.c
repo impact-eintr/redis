@@ -382,18 +382,21 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
         // rfired 确保读/写事件只能执行其中一个
         rfired = 1;
         fe->rfileProc(eventLoop, fd, fe->clientData, mask);
+        printf("处理文件读事件\n");
+        sleep(1);
       }
       // 写事件
       if (fe->mask & mask & AE_WRITABLE) {
-        if (!rfired || fe->wfileProc != fe->rfileProc)
+        if (!rfired || fe->wfileProc != fe->rfileProc) {
           fe->wfileProc(eventLoop, fd, fe->clientData, mask);
+          printf("处理文件写事件\n");
+          sleep(1);
+        }
       }
 
       processed++;
     }
 
-    printf("处理事件\n");
-    sleep(1);
   }
 
   // 执行时间事件

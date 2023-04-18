@@ -83,6 +83,22 @@
 #define REDIS_BINDADDR_MAX 16
 #define REDIS_MIN_RESERVED_FDS 32
 
+#define ACTIVE_EXPIRE_CYCLE_LOOKUPS_PER_LOOP 20 /* Loopkups per loop. */
+#define ACTIVE_EXPIRE_CYCLE_FAST_DURATION 1000  /* Microseconds */
+#define ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC                                     \
+  25 /* CPU max % for keys collection */
+#define ACTIVE_EXPIRE_CYCLE_SLOW 0
+#define ACTIVE_EXPIRE_CYCLE_FAST 1
+
+/* Protocol and I/O related defines */
+#define REDIS_MAX_QUERYBUF_LEN (1024 * 1024 * 1024) /* 1GB max query buffer.   \
+                                                     */
+#define REDIS_IOBUF_LEN (1024 * 16)         /* Generic I/O buffer size */
+#define REDIS_REPLY_CHUNK_BYTES (16 * 1024) /* 16k output buffer */
+#define REDIS_INLINE_MAX_SIZE (1024 * 64)   /* Max size of inline reads */
+#define REDIS_MBULK_BIG_ARG (1024 * 32)
+#define REDIS_LONGSTR_SIZE 21 /* Bytes needed for long -> str */
+
 // 指示 AOF 程序每累积这个量的写入数据
 // 就执行一次显式的 fsync
 #define REDIS_AOF_AUTOSYNC_BYTES (1024 * 1024 * 32) /* fdatasync every 32MB */
@@ -150,6 +166,10 @@
 #define REDIS_PRE_PSYNC (1<<16)   /* Instance don't understand PSYNC. */
 #define REDIS_READONLY (1<<17)    /* Cluster client is in read-only state. */
 
+
+/* Client request types */
+#define REDIS_REQ_INLINE 1
+#define REDIS_REQ_MULTIBULK 2
 
 /* Log levels */
 #define REDIS_DEBUG 0
@@ -370,6 +390,8 @@ struct redisServer
 
   // TODO
 
+  int sentinel_mode; // 服务是否运行在哨兵模式
+
   /* Networking */
 
   // TCP 监听端口
@@ -563,9 +585,11 @@ struct redisServer
   int lastbgsave_status;          /* REDIS_OK or REDIS_ERR */
   int stop_writes_on_bgsave_err;  /* Don't allow writes if can't BGSAVE */
 
-
   // Limits
   int maxclients;
+
+  /*  CLUSTER */
+  int cluster_enabled;
 
 
 };

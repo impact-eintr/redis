@@ -1,11 +1,15 @@
 #include "redis.h"
+#include "version.h"
 #include "adlist.h"
 #include "ae.h"
+#include "anet.h"
+#include "color.h"
 #include "dict.h"
 #include "zmalloc.h"
 
 #include <string.h>
 #include <stdio.h>
+#include <sys/syslog.h>
 #include <sys/time.h>
 
 struct sharedObjectsStruct shared;
@@ -571,15 +575,94 @@ void createSharedObjects() {
 }
 
 void initServerConfig() {
+  int j;
+  /*服务器状态*/
+
+  server.configfile = NULL;
   // 设置默认服务器频率
   server.hz = REDIS_DEFAULT_HZ;
+  server.port = REDIS_SERVERPORT;
+  server.tcp_backlog = REDIS_TCP_BACKLOG;
+  server.bindaddr_count = 0;
+
+  server.ipfd_count = 0;
   server.dbnum = REDIS_DEFAULT_DBNUM;
+  server.tcpkeepalive = REDIS_DEFAULT_TCP_KEEPALIVE;
+
 
   server.maxclients = REDIS_MAX_CLIENTS;
 
   server.commands = dictCreate(&commandTableDictType, NULL);
   server.orig_commands = dictCreate(&commandTableDictType, NULL);
   populateCommandTable();
+}
+
+// 监听端口
+int listenToPort(int port, int *fds, int *count) {
+  int j;
+
+  if (server.bindaddr_count == 0) {
+    server.bindaddr[0] = NULL;
+  }
+
+  // 监听所有绑定的IP
+  for (j = 0; j < server.bindaddr_count||j == 0; j++) {
+    if (server.bindaddr[j] == NULL) {
+      /* Bind * for both IPv6 and IPv4, we enter here only if
+       * server.bindaddr_count == 0. */
+      fds[*count] =
+          anetTcp6Server(server.neterr, port, NULL, server.tcp_backlog);
+      if (fds[*count] != ANET_ERR) {
+        anetNonBlock(NULL, fds[*count]);
+        (*count)++;
+      }
+      fds[*count] =
+          anetTcpServer(server.neterr, port, NULL, server.tcp_backlog);
+      if (fds[*count] != ANET_ERR) {
+        anetNonBlock(NULL, fds[*count]);
+        (*count)++;
+      }
+      /* Exit the loop if we were able to bind * on IPv4 or IPv6,
+       * otherwise fds[*count] will be ANET_ERR and we'll print an
+       * error and return to the caller with an error. */
+      if (*count)
+        break;
+    } else if (strchr(server.bindaddr[j], ':')) {
+      // bind IPv6
+      fds[*count] = anetTcp6Server(server.neterr, port, server.bindaddr[j], server.tcp_backlog);
+    } else {
+      fds[*count] = anetTcpServer(server.neterr, port, server.bindaddr[j],
+                                  server.tcp_backlog);
+    }
+    if (fds[*count] == ANET_ERR) {
+      redisLog(REDIS_WARNING, "Creating Server TCP listening socket %s:%d: %s",
+               server.bindaddr[j] ? server.bindaddr[j] : "*", port,
+               server.neterr);
+      return REDIS_ERR;
+    }
+    anetNonBlock(NULL, fds[*count]);
+    (*count)++;
+  }
+  return REDIS_OK;
+}
+
+// 重置服务器状态
+void resetServerState() {
+  server.stat_numcommands = 0;
+  server.stat_numconnections = 0;
+  server.stat_expiredkeys = 0;
+  server.stat_evictedkeys = 0;
+  server.stat_keyspace_misses = 0;
+  server.stat_keyspace_hits = 0;
+  server.stat_fork_time = 0;
+  server.stat_rejected_conn = 0;
+  server.stat_sync_full = 0;
+  server.stat_sync_partial_ok = 0;
+  server.stat_sync_partial_err = 0;
+  //memset(server.ops_sec_samples, 0, sizeof(server.ops_sec_samples));
+  //server.ops_sec_idx = 0;
+  //server.ops_sec_last_sample_time = mstime();
+  //server.ops_sec_last_sample_ops = 0;
 }
 
 void initServer() {
@@ -591,15 +674,27 @@ void initServer() {
     //setupSignalHandlers();
 
     // 初始化并创建数据结构
-    // TODO
     server.current_client = NULL;
     server.clients = listCreate();
     server.clients_to_close = listCreate();
+    // TODO
 
     // 创建共享对象
     createSharedObjects();
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
     server.el = aeCreateEventLoop(server.maxclients + REDIS_EVENTLOOP_FDSET_INCR);
+
+    // 打开TCP监听端口 用于等待客户端的命令请求
+    if (server.port != 0 && listenToPort(server.port, server.ipfd, &server.ipfd_count) == REDIS_ERR) {
+      exit(1);
+    }
+    // TODO 监听本地UNIX连接
+
+    /* Abort if there are no listening sockets at all. */
+    if (server.ipfd_count == 0 && server.sofd < 0) {
+      redisLog(REDIS_WARNING, "Configured to not listen anywhere, exiting.");
+      exit(1);
+    }
 
     // 创建并初始化数据库结构
     for (j = 0; j < server.dbnum; j++) {
@@ -615,7 +710,69 @@ void initServer() {
 
     server.rdb_child_pid = -1;
     server.aof_child_pid = -1;
+
+    // TODO 为 serverCron() 创建时间事件
+    //if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {
+    //  redisPanic("Can't create the serverCron time event.");
+    //  exit(1);
+    //}
+
+    for (j = 0;j < server.ipfd_count;j++) {
+      if (aeCreateFileEvent(server.el, server.ipfd[j], AE_READABLE,
+                            acceptTcpHandler, NULL) == AE_ERR) {
+        redisPanic("Unrecoverable error creating server.ipfd file event.");
+      }
+    }
+    // TODO 本地连接 AOF功能 集群
+
 }
+
+/*============================ Utility functions ============================ */
+
+/* Low level logging. To use only for very big messages, otherwise
+ * redisLog() is to prefer. */
+void redisLogRaw(int level, const char *msg) {
+  const int syslogLevelMap[] = { LOG_DEBUG, LOG_INFO, LOG_NOTICE, LOG_WARNING };
+
+  // TODO 开启syslog
+  switch (syslogLevelMap[level]) {
+    case LOG_DEBUG:
+      printf(BLUESTR("%s\n"), msg);
+      break;
+    case LOG_INFO:
+      printf(GREENSTR("%s\n"), msg);
+      break;
+    case LOG_NOTICE:
+      printf(YELLOWSTR("%s\n"), msg);
+      break;
+    case LOG_WARNING:
+      printf(REDSTR("%s\n"), msg);
+      break;
+    default:
+      printf(REDSTR("%s\n"), msg);
+  }
+}
+
+/* Like redisLogRaw() but with printf-alike support. This is the function that
+ * is used across the code. The raw version is only used in order to dump
+ * the INFO output on crash. */
+void redisLog(int level, const char *fmt, ...) {
+  va_list ap;
+  char msg[REDIS_MAX_LOGMSG_LEN];
+
+  if ((level&0xff) < server.verbosity) return;
+
+  va_start(ap, fmt);
+  vsnprintf(msg, sizeof(msg), fmt, ap);
+  va_end(ap);
+
+  redisLogRaw(level,msg);
+}
+
+int processCommand(redisClient *c) {
+  return REDIS_OK;
+}
+
 
 // 每次处理事件前执行
 void beforeSleep(struct aeEventLoop *eventLoop) {
@@ -626,8 +783,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
 #if 1
 
 void test() {
-  redisClient *cli = createClient();
-
+  redisClient *cli = zmalloc(sizeof(redisClient));
   robj *argv[5];
   argv[0] = createStringObject("SET", 3);
   argv[1] = createStringObject("key", 3);
@@ -657,12 +813,32 @@ void test() {
 
 }
 
+void redisAsciiArt(void) {
+#include "asciilogo.h"
+  char *buf = zmalloc(1024 * 16);
+  char *mode = "stand alone";
+
+  if (server.cluster_enabled)
+      mode = "cluster";
+  else if (server.sentinel_mode)
+      mode = "sentinel";
+
+  snprintf(buf, 1024 * 16, ascii_logo, REDIS_VERSION,
+           (sizeof(long) == 8) ? "64" : "32", mode, server.port,
+           (long)getpid());
+  //redisLogRaw(REDIS_NOTICE | REDIS_LOG_RAW, buf);
+  redisLogRaw(REDIS_NOTICE, buf);
+  zfree(buf);
+}
+
 int main(int argc, char **argv) {
     // 初始化服务器
     initServerConfig();
     initServer();
 
-    test();
+    redisAsciiArt();
+
+    //test();
 
     // 运行事件处理器，一直到服务器关闭为止
     aeSetBeforeSleepProc(server.el, beforeSleep);
