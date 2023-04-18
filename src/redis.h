@@ -608,7 +608,7 @@ struct redisCommand
   // 实现函数
   redisCommandProc *proc;
 
-  // 参数个数
+  // 参数个数 > 0 固定 < 0 至少
   int arity;
 
   // 字符串表示的 FLAG

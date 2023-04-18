@@ -66,9 +66,24 @@ void freeClientAsync(redisClient *c) {
 
 }
 
-// 重置客户端
-void resetClient(redisClient *c) {
+static void freeClientArgv(redisClient *c) {
+  for (int j = 0;j < c->argc;j++) {
+    decrRefCountVoid(c->argv[j]);
+  }
+  c->argc = 0;
+  c->cmd = NULL;
+}
 
+// 在客户端执行完命令后重置客户端 准备执行下个指令
+void resetClient(redisClient *c) {
+  redisCommandProc *prevcmd = c->cmd ? c->cmd->proc : NULL;
+
+  freeClientArgv(c);
+  c->reqtype = 0;
+  c->multibulklen = 0;
+  c->bulklen = -1;
+  // TODO AskCommand
+  printf("释放 Client\n");
 }
 
 // 事件处理器 命令回复处理器
@@ -189,7 +204,6 @@ int processInlineBuffer(redisClient *c) {
   querylen = newline - (c->querybuf);
   aux = sdsnewlen(c->querybuf, querylen);
   argv = sdssplitargs(aux, &argc);
-  printf("argc: %d\n", argc);
   sdsfree(aux);
   if (argv == NULL) {
     addReplyError(c, "Protocol error: unbalanced quotes in request");

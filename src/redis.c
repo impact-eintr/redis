@@ -769,10 +769,58 @@ void redisLog(int level, const char *fmt, ...) {
   redisLogRaw(level,msg);
 }
 
-int processCommand(redisClient *c) {
-  return REDIS_OK;
+
+struct redisCommand *lookupCommand(sds name) {
+  return dictFetchValue(server.commands, name);
 }
 
+/*
+ * 根据给定命令名字（C 字符串），查找命令
+ */
+struct redisCommand *lookupCommandByCString(char *s) {
+  struct redisCommand *cmd;
+  sds name = sdsnew(s);
+
+  cmd = dictFetchValue(server.commands, name);
+  sdsfree(name);
+  return cmd;
+}
+
+struct redisCommand *lookupCommandOrOriginal(sds name) {
+
+  // 查找当前表
+  struct redisCommand *cmd = dictFetchValue(server.commands, name);
+
+  // 如果有需要的话，查找原始表
+  if (!cmd)
+      cmd = dictFetchValue(server.orig_commands, name);
+
+  return cmd;
+}
+
+int processCommand(redisClient *c) {
+  if (!strcasecmp(c->argv[0]->ptr, "quit")) {
+      addReply(c, shared.ok);
+      c->flags |= REDIS_CLOSE_AFTER_REPLY;
+      return REDIS_ERR;
+  }
+  c->cmd = c->lastcmd = lookupCommand(c->argv[0]->ptr);
+  if (!c->cmd) { // 没找到
+      // TODO flagTransaction(c);
+      addReplyErrorFormat(c, "unknown command '%s'", (char *)c->argv[0]->ptr);
+      return REDIS_OK;
+  } else if ((c->cmd->arity > 0 && c->cmd->arity != c->argc) ||
+             (c->argc < -c->cmd->arity)) { // 参数个数错误
+
+      // TODO flagTransaction(c);
+      addReplyErrorFormat(c, "wrong number of arguments for '%s' command",
+                          c->cmd->name);
+
+      return REDIS_OK;
+  }
+  setCommand(c);
+  return REDIS_OK;
+}
 
 // 每次处理事件前执行
 void beforeSleep(struct aeEventLoop *eventLoop) {
@@ -837,8 +885,6 @@ int main(int argc, char **argv) {
     initServer();
 
     redisAsciiArt();
-
-    //test();
 
     // 运行事件处理器，一直到服务器关闭为止
     aeSetBeforeSleepProc(server.el, beforeSleep);
