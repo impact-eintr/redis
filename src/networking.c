@@ -1,9 +1,14 @@
+#include "adlist.h"
 #include "color.h"
 #include "redis.h"
+#include "sds.h"
 #include "util.h"
 #include "ae.h"
 #include "zmalloc.h"
+#include "anet.h"
 
+#include <asm-generic/errno.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,20 +18,55 @@ redisClient *createClient(int fd) {
 
   // -1创建伪客户端 !-1 创建普通客户端
   if (fd != -1) {
+    // 非阻塞
+    anetNonBlock(NULL, fd);
+    // 禁用Nagle算法
+    anetEnableTcpNoDelay(NULL, fd);
+    if (server.tcpkeepalive) {
+      anetKeepAlive(NULL, fd, server.tcpkeepalive);
+    }
+    // NOTE 添加事件
+    if (aeCreateFileEvent(server.el, fd, AE_READABLE, readQueryFromClient, c) == AE_ERR) {
+      close(fd);
+      zfree(c);
+      return NULL;
+    }
+
   }
 
   // 初始化属性
   selectDb(c, 0);
   c->fd = fd;
   c->name = NULL;
+  c->querybuf = sdsempty();
+  c->reqtype = 0;
+  c->argc = 0;
+  c->argv = NULL;
+  c->flags = 0;
 
+  if (fd != -1) {
+    listAddNodeTail(server.clients, c);
+  }
 
   return c;
 }
 
 void closeTimedoutClients(void);
-void freeClient(redisClient *c);
-void freeClientAsync(redisClient *c);
+
+
+// 同步释放客户端
+void freeClient(redisClient *c) {
+  // TODO
+
+  zfree(c);
+}
+
+// 异步释放客户端
+void freeClientAsync(redisClient *c) {
+
+}
+
+// 重置客户端
 void resetClient(redisClient *c);
 
 // 事件处理器 命令回复处理器
@@ -44,13 +84,73 @@ void setDeferredMultiBulkLength(redisClient *c, void *node, long length);
 void addReplySds(redisClient *c, sds s);
 void processInputBuffer(redisClient *c);
 
-// 事件处理器 连接应答处理器
-void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+#define MAX_ACCEPTS_PER_CALL 1000
+static void acceptCommonHandler(int fd, int flags) {
+  // 创建客户端
+  redisClient *c;
+  if ((c = createClient(fd)) == NULL) {
+    redisLog(REDIS_WARNING,
+             "Error registering fd event for the new client: %s (fd=%d)",
+             strerror(errno), fd);
+    close(fd);
+    return;
+  }
 
+  if (listLength(server.clients) > server.maxclients) {
+    char *err = "-ERR max number of clients reached\r\n";
+    if (write(c->fd, err, strlen(err)) == -1) {}
+    server.stat_rejected_conn++;
+    freeClient(c);
+    return;
+  }
+
+  server.stat_numconnections++;
+
+  // 设置Flag
+  c->flags |= flags;
 }
 
-void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+// 事件处理器 连接应答处理器
+void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+  int cport, cfd, max = MAX_ACCEPTS_PER_CALL;
+  char cip[REDIS_IP_STR_LEN];
+  REDIS_NOTUSED(el);
+  REDIS_NOTUSED(mask);
+  REDIS_NOTUSED(privdata);
 
+  while(max--) {
+    // accept 客户端连接
+    cfd = anetTcpAccept(server.neterr, fd, cip, sizeof(cip), &cport);
+    if (cfd == ANET_ERR) {
+      if (errno != EWOULDBLOCK) {
+        redisLog(REDIS_WARNING, "Accepting client connection: %s", server.neterr);
+      }
+      return;
+    }
+    redisLog(REDIS_VERBOSE, "Accepted %s:%d", cip, cport);
+    acceptCommonHandler(cfd, REDIS_UNIX_SOCKET); // 为本地客户端创建客户端状态
+  }
+}
+
+// 事件处理器 本地连接处理器
+void acceptUnixHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+  int cfd, max = MAX_ACCEPTS_PER_CALL;
+  REDIS_NOTUSED(el);
+  REDIS_NOTUSED(mask);
+  REDIS_NOTUSED(privdata);
+
+  while(max--) {
+    // accept 客户端连接
+    cfd = anetUnixAccept(server.neterr, fd);
+    if (cfd == ANET_ERR) {
+      if (errno != EWOULDBLOCK) {
+        redisLog(REDIS_WARNING, "Accepting client connection: %s", server.neterr);
+      }
+      return;
+    }
+    redisLog(REDIS_VERBOSE, "Accepted connection to %s", server.unixsocket);
+    acceptCommonHandler(cfd, REDIS_UNIX_SOCKET); // 为本地客户端创建客户端状态
+  }
 }
 
 // 事件处理器 命令请求处理器

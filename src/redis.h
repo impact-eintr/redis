@@ -3,9 +3,20 @@
 
 #include <assert.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <syslog.h>
+#include <pthread.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <errno.h>
+#include <time.h>
+#include <limits.h>
+#include <string.h>
 
 #include "ae.h"
 #include "adlist.h"
+#include "anet.h"
 #include "dict.h"
 #include "sds.h"
 
@@ -115,6 +126,41 @@
 #define REDIS_ENCODING_INTSET 6     /* Encoded as intset */
 #define REDIS_ENCODING_SKIPLIST 7   /* Encoded as skiplist */
 #define REDIS_ENCODING_EMBSTR 8     /* Embedded sds string encoding */
+
+
+
+/* Client flags */
+#define REDIS_SLAVE (1<<0)   /* This client is a slave server */
+#define REDIS_MASTER (1<<1)  /* This client is a master server */
+#define REDIS_MONITOR (1<<2) /* This client is a slave monitor, see MONITOR */
+#define REDIS_MULTI (1<<3)   /* This client is in a MULTI context */
+#define REDIS_BLOCKED (1<<4) /* The client is waiting in a blocking operation */
+#define REDIS_DIRTY_CAS (1<<5) /* Watched keys modified. EXEC will fail. */
+#define REDIS_CLOSE_AFTER_REPLY (1<<6) /* Close after writing entire reply. */
+#define REDIS_UNBLOCKED (1<<7) /* This client was unblocked and is stored in
+                                  server.unblocked_clients */
+#define REDIS_LUA_CLIENT (1<<8) /* This is a non connected client used by Lua */
+#define REDIS_ASKING (1<<9)     /* Client issued the ASKING command */
+#define REDIS_CLOSE_ASAP (1<<10)/* Close this client ASAP */
+#define REDIS_UNIX_SOCKET (1<<11) /* Client connected via Unix domain socket */
+#define REDIS_DIRTY_EXEC (1<<12)  /* EXEC will fail for errors while queueing */
+#define REDIS_MASTER_FORCE_REPLY (1<<13)  /* Queue replies even if is master */
+#define REDIS_FORCE_AOF (1<<14)   /* Force AOF propagation of current cmd. */
+#define REDIS_FORCE_REPL (1<<15)  /* Force replication of current cmd. */
+#define REDIS_PRE_PSYNC (1<<16)   /* Instance don't understand PSYNC. */
+#define REDIS_READONLY (1<<17)    /* Cluster client is in read-only state. */
+
+
+/* Log levels */
+#define REDIS_DEBUG 0
+#define REDIS_VERBOSE 1
+#define REDIS_NOTICE 2
+#define REDIS_WARNING 3
+#define REDIS_LOG_RAW (1<<10) /* Modifier to log without timestamp */
+#define REDIS_DEFAULT_VERBOSITY REDIS_NOTICE
+
+
+#define REDIS_NOTUSED(v) ((void) v);
 
 #define ZSKIPLIST_MAXLEVEL 32
 #define ZSKIPLIST_P 0.25
@@ -240,12 +286,48 @@ typedef struct redisClient
 
   robj *name; // 客户端名称
 
-  sds querybyf; // 查询缓冲区
+  sds querybuf; // 查询缓冲区
   size_t querybuf_peak; // 查询缓冲区长度峰值
 
   // 参数
   int argc;
   robj **argv;
+
+  // 记录被客户端执行的命令
+  struct redisCommand *cmd, *lastcmd;
+
+  // 请求的类型：内联命令还是多条命令
+  int reqtype;
+
+  // 剩余未读取的命令内容数量
+  int multibulklen; /* number of multi bulk arguments left to read */
+
+  // 命令内容的长度
+  long bulklen; /* length of bulk argument in multi bulk request */
+
+  // 回复链表
+  list *reply;
+
+  // 回复链表中对象的总大小
+  unsigned long reply_bytes; /* Tot bytes of objects in reply list */
+
+  // 已发送字节，处理 short write 用
+  int sentlen; /* Amount of bytes already sent in the current
+                  buffer or object being sent. */
+
+  // 创建客户端的时间
+  time_t ctime; /* Client creation time */
+
+  // 客户端最后一次和服务器互动的时间
+  time_t lastinteraction; /* time of the last interaction, used for timeout */
+
+  // 客户端的输出缓冲区超过软性限制的时间
+  time_t obuf_soft_limit_reached_time;
+
+  // 客户端状态标志
+  int flags; /* REDIS_SLAVE | REDIS_MONITOR | REDIS_MULTI ... */
+
+  // TODO
 
 } redisClient;
 
@@ -285,6 +367,55 @@ struct redisServer
 
   // 最近一次使用时钟
   unsigned lruclock:REDIS_LRU_BITS;
+
+  // TODO
+
+  /* Networking */
+
+  // TCP 监听端口
+  int port; /* TCP listening port */
+
+  int tcp_backlog; /* TCP listen() backlog */
+
+  // 地址
+  char *bindaddr[REDIS_BINDADDR_MAX]; /* Addresses we should bind to */
+  // 地址数量
+  int bindaddr_count; /* Number of addresses in server.bindaddr[] */
+
+  // UNIX 套接字
+  char *unixsocket;      /* UNIX socket path */
+  mode_t unixsocketperm; /* UNIX socket permission */
+
+  // 描述符
+  int ipfd[REDIS_BINDADDR_MAX]; /* TCP socket file descriptors */
+  // 描述符数量
+  int ipfd_count; /* Used slots in ipfd[] */
+
+  // UNIX 套接字文件描述符
+  int sofd; /* Unix socket file descriptor */
+
+  int cfd[REDIS_BINDADDR_MAX]; /* Cluster bus listening socket */
+  int cfd_count;               /* Used slots in cfd[] */
+
+  // 一个链表，保存了所有客户端状态结构
+  list *clients; /* List of active clients */
+  // 链表，保存了所有待关闭的客户端
+  list *clients_to_close; /* Clients to close asynchronously */
+
+  // 链表，保存了所有从服务器，以及所有监视器
+  list *slaves, *monitors; /* List of slaves and MONITORs */
+
+  // 服务器的当前客户端，仅用于崩溃报告
+  redisClient *current_client; /* Current client, only used on crash report */
+
+  int clients_paused;              /* True if clients are currently paused */
+  mstime_t clients_pause_end_time; /* Time when we undo clients_paused */
+
+  // 网络错误
+  char neterr[ANET_ERR_LEN]; /* Error buffer for anet.c */
+
+  // MIGRATE 缓存
+  dict *migrate_cached_sockets; /* MIGRATE cached sockets */
 
   /* Fields used only for stats */
 
@@ -327,13 +458,24 @@ struct redisServer
   // PSYNC 执行失败的次数
   long long stat_sync_partial_err;/* Number of unaccepted PSYNC requests. */
 
-  int dbnum; // default is 16
+  /* 配置字段 */
 
-  list *clients; // 一个链表 保存了所有客户端状态
-  list *clients_to_close; // 一个链表 保存了所有即将关闭的客户端
+  // 日志可见性
+  int verbosity; /* Loglevel in redis.conf */
 
-  redisClient *current_client; // 服务器的当前客户端 仅仅用于崩溃报告
+  // 客户端最大空转时间
+  int maxidletime; /* Client timeout in seconds */
 
+  // 是否开启 SO_KEEPALIVE 选项
+  int tcpkeepalive;               /* Set SO_KEEPALIVE if non-zero. */
+  int active_expire_enabled;      /* Can be disabled for testing purposes. */
+  size_t client_max_querybuf_len; /* Limit for client query buffer length */
+  int dbnum;                      /* Total number of configured DBs */
+  int daemonize;                  /* True if running as a daemon */
+  // 客户端输出缓冲区大小限制
+  // 数组的元素有 REDIS_CLIENT_LIMIT_NUM_CLASSES 个
+  // 每个代表一类客户端：普通、从服务器、pubsub，诸如此类
+  // TODO clientBufferLimitsConfig client_obuf_limits[REDIS_CLIENT_LIMIT_NUM_CLASSES];
 
   // AOF persistence
   int aof_state;                  /* REDIS_AOF_(ON|OFF|WAIT_REWRITE) */
@@ -523,6 +665,35 @@ void zsetConvert(robj *zobj, int encoding);
 unsigned long zslGetRank(zskiplist *zsl, double score, robj *o);
 
 // Core funtions
+int freeMemoryIfNeeded(void);
+int processCommand(redisClient *c);
+void setupSignalHandlers(void);
+struct redisCommand *lookupCommand(sds name);
+struct redisCommand *lookupCommandByCString(char *s);
+struct redisCommand *lookupCommandOrOriginal(sds name);
+void call(redisClient *c, int flags);
+void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc, int flags);
+void alsoPropagate(struct redisCommand *cmd, int dbid, robj **argv, int argc, int target);
+void forceCommandPropagation(redisClient *c, int flags);
+int prepareForShutdown();
+#ifdef __GNUC__
+void redisLog(int level, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+#else
+void redisLog(int level, const char *fmt, ...);
+#endif
+void redisLogRaw(int level, const char *msg);
+void redisLogFromHandler(int level, const char *msg);
+void usage();
+void updateDictResizePolicy(void);
+int htNeedsResize(dict *dict);
+void oom(const char *msg);
+void populateCommandTable(void);
+void resetCommandTableStats(void);
+void adjustOpenFilesLimit(void);
+void closeListeningSockets(int unlink_unix_socket);
+void updateCachedTime(void);
+void resetServerStats(void);
 unsigned int getLRUClock(void);
 
 // Redis Object implementation
