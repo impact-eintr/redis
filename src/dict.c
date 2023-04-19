@@ -349,9 +349,10 @@ dictEntry *dictFind(dict *d, const void *key) {
 
 // 获取包含给定键的节点的值
 void *dictFetchValue(dict *d, const void *key) {
-  dictEntry*he;
+  dictEntry *he;
   he = dictFind(d, key);
-  return he ? dictGetKey(he) : NULL;
+  printf("%s\n", (char *)he->key);
+  return he ? dictGetVal(he) : NULL;
 }
 
 // 手动rehash

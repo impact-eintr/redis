@@ -188,6 +188,15 @@
 #define UNIT_SECONDS 0
 #define UNIT_MILLISECONDS 1
 
+
+// Command call flags see call() function
+#define REDIS_CALL_NONE 0
+#define REDIS_CALL_SLOWLOG 1
+#define REDIS_CALL_STATS 2
+#define REDIS_CALL_PROPAGATE 4
+#define REDIS_CALL_FULL                                                        \
+  (REDIS_CALL_SLOWLOG | REDIS_CALL_STATS | REDIS_CALL_PROPAGATE)
+
 #define REDIS_LRU_BITS 24
 #define REDIS_LRU_CLOCK_MAX ((1<<REDIS_LRU_BITS)-1) // Max value of obj->lru
 #define REDIS_LRU_CLOCK_RESOLUTION 1000
@@ -349,6 +358,9 @@ typedef struct redisClient
 
   // TODO
 
+  // 回复缓冲区
+  int bufpos;
+  char buf[REDIS_REPLY_CHUNK_BYTES];
 } redisClient;
 
 
@@ -365,6 +377,40 @@ struct sharedObjectsStruct {
       *mbulkhdr[REDIS_SHARED_BULKHDR_LEN], /* "*<value>\r\n" */
       *bulkhdr[REDIS_SHARED_BULKHDR_LEN];  /* "$<value>\r\n" */
 };
+
+/* The redisOp structure defines a Redis Operation, that is an instance of
+ * a command with an argument vector, database ID, propagation target
+ * (REDIS_PROPAGATE_*), and command pointer.
+ *
+ * redisOp 结构定义了一个 Redis 操作，
+ * 它包含指向被执行命令的指针、命令的参数、数据库 ID
+ * 、传播目标（REDIS_PROPAGATE_*）。
+ *
+ * Currently only used to additionally propagate more commands to
+ * AOF/Replication after the propagation of the executed command.
+ *
+ * 目前只用于在传播被执行命令之后，传播附加的其他命令到 AOF 或 Replication 中。
+ */
+typedef struct redisOp {
+  // 参数
+  robj **argv;
+  // 参数数量、数据库 ID 、传播目标
+  int argc, dbid, target;
+  // 被执行命令的指针
+  struct redisCommand *cmd;
+} redisOp;
+
+/* Defines an array of Redis operations. There is an API to add to this
+ * structure in a easy way.
+ *
+ * redisOpArrayInit();
+ * redisOpArrayAppend();
+ * redisOpArrayFree();
+ */
+typedef struct redisOpArray {
+  redisOp *ops;
+  int numops;
+} redisOpArray;
 
 // redis服务器
 struct redisServer
@@ -585,8 +631,14 @@ struct redisServer
   int lastbgsave_status;          /* REDIS_OK or REDIS_ERR */
   int stop_writes_on_bgsave_err;  /* Don't allow writes if can't BGSAVE */
 
+  /* Propagation of commands in AOF / replication */
+  redisOpArray also_propagate; /* Additional command to propagate. */
+
   // Limits
   int maxclients;
+  unsigned long long maxmemory;
+  int maxmemory_policy;  /* Policy for key eviction */
+  int maxmemory_samples; /* Pricision of random sampling */
 
   /*  CLUSTER */
   int cluster_enabled;

@@ -242,9 +242,9 @@ struct redisCommand redisCommandTable[] = {
     //    {"shutdown", shutdownCommand, -1, "arlt", 0, NULL, 0, 0, 0, 0, 0},
     //    {"lastsave", lastsaveCommand, 1, "rR", 0, NULL, 0, 0, 0, 0, 0},
     //    {"type", typeCommand, 2, "r", 0, NULL, 1, 1, 1, 0, 0},
-    //    {"multi", multiCommand, 1, "rs", 0, NULL, 0, 0, 0, 0, 0},
-    //    {"exec", execCommand, 1, "sM", 0, NULL, 0, 0, 0, 0, 0},
-    //    {"discard", discardCommand, 1, "rs", 0, NULL, 0, 0, 0, 0, 0},
+    {"multi", multiCommand, 1, "rs", 0, NULL, 0, 0, 0, 0, 0},
+    {"exec", execCommand, 1, "sM", 0, NULL, 0, 0, 0, 0, 0},
+    {"discard", discardCommand, 1, "rs", 0, NULL, 0, 0, 0, 0, 0},
     //    {"sync", syncCommand, 1, "ars", 0, NULL, 0, 0, 0, 0, 0},
     //    {"psync", syncCommand, 3, "ars", 0, NULL, 0, 0, 0, 0, 0},
     //    {"replconf", replconfCommand, -1, "arslt", 0, NULL, 0, 0, 0, 0, 0},
@@ -268,7 +268,7 @@ struct redisCommand redisCommandTable[] = {
     //    0, 0},
     //    {"publish", publishCommand, 3, "pltr", 0, NULL, 0, 0, 0, 0, 0},
     //    {"pubsub", pubsubCommand, -2, "pltrR", 0, NULL, 0, 0, 0, 0, 0},
-    //    {"watch", watchCommand, -2, "rs", 0, NULL, 1, -1, 1, 0, 0},
+    {"watch", watchCommand, -2, "rs", 0, NULL, 1, -1, 1, 0, 0},
     //    {"unwatch", unwatchCommand, 1, "rs", 0, NULL, 0, 0, 0, 0, 0},
     //    {"cluster", clusterCommand, -2, "ar", 0, NULL, 0, 0, 0, 0, 0},
     //    {"restore", restoreCommand, -4, "awm", 0, NULL, 1, 1, 1, 0, 0},
@@ -769,6 +769,41 @@ void redisLog(int level, const char *fmt, ...) {
   redisLogRaw(level,msg);
 }
 
+/* ========================== Redis OP Array API ============================ */
+
+void redisOpArrayInit(redisOpArray *oa) {
+  oa->ops = NULL;
+  oa->numops = 0;
+}
+
+int redisOpArrayAppend(redisOpArray *oa, struct redisCommand *cmd, int dbid,
+                       robj **argv, int argc, int target) {
+  redisOp *op;
+
+  oa->ops = zrealloc(oa->ops, sizeof(redisOp) * (oa->numops + 1));
+  op = oa->ops + oa->numops;
+  op->cmd = cmd;
+  op->dbid = dbid;
+  op->argv = argv;
+  op->argc = argc;
+  op->target = target;
+  oa->numops++;
+  return oa->numops;
+}
+
+void redisOpArrayFree(redisOpArray *oa) {
+  while (oa->numops) {
+      int j;
+      redisOp *op;
+
+      oa->numops--;
+      op = oa->ops + oa->numops;
+      for (j = 0; j < op->argc; j++)
+        decrRefCount(op->argv[j]);
+      zfree(op->argv);
+  }
+  zfree(oa->ops);
+}
 
 struct redisCommand *lookupCommand(sds name) {
   return dictFetchValue(server.commands, name);
@@ -798,6 +833,40 @@ struct redisCommand *lookupCommandOrOriginal(sds name) {
   return cmd;
 }
 
+int freeMemoryIfNeeded() {
+  // TODO 计算Redis目前占用的内存信息 有需要话删除过期的键
+  return 1;
+}
+
+// 调用命令的实现函数
+void call(redisClient *c, int flags) {
+  // start 记录命令开始执行的时间
+  long long dirty, start, duration;
+  // 记录命令开始执行前的 FLAG
+  int client_old_flags = c->flags;
+  /* Call the command. */
+  c->flags &= ~(REDIS_FORCE_AOF | REDIS_FORCE_REPL);
+  redisOpArrayInit(&server.also_propagate);
+  // 保留旧 dirty 计数器值
+  dirty = server.dirty;
+  // 计算命令开始执行的时间
+  start = ustime();
+  // 执行实现函数
+  c->cmd->proc(c);
+  // 计算命令执行耗费的时间
+  duration = ustime() - start;
+  // 计算命令执行之后的 dirty 值
+  dirty = server.dirty - dirty;
+
+  // 更新命令的统计信息
+  if (flags & REDIS_CALL_STATS) {
+      c->cmd->microseconds += duration;
+      c->cmd->calls++;
+  }
+
+  server.stat_numcommands++;
+}
+
 int processCommand(redisClient *c) {
   if (!strcasecmp(c->argv[0]->ptr, "quit")) {
       addReply(c, shared.ok);
@@ -811,14 +880,42 @@ int processCommand(redisClient *c) {
       return REDIS_OK;
   } else if ((c->cmd->arity > 0 && c->cmd->arity != c->argc) ||
              (c->argc < -c->cmd->arity)) { // 参数个数错误
-
       // TODO flagTransaction(c);
       addReplyErrorFormat(c, "wrong number of arguments for '%s' command",
                           c->cmd->name);
-
       return REDIS_OK;
   }
-  setCommand(c);
+  //  TODO 检查认证信息 && 处理集群
+
+  // 如果设置了最大内存 尝试删除过期键来释放内存
+  if (server.maxmemory) {
+    int retval = freeMemoryIfNeeded();
+    // TODO 处理内存错误
+  }
+
+  // TODO 处理 BGSAVE 命令
+
+  // TODO 处理状态异常的服务器 只读服务器 发布订阅模式 载入数据 Lua脚本
+
+  // 执行命令
+  if (c->flags & REDIS_MULTI && c->cmd->proc != execCommand &&
+      c->cmd->proc != discardCommand && c->cmd->proc != multiCommand &&
+      c->cmd->proc != watchCommand) {
+    // 在事务上下文中
+    // 除 EXEC 、 DISCARD 、 MULTI 和 WATCH 命令之外
+    // 其他所有命令都会被入队到事务队列中
+    // TODO queueMultiCommand(c);
+    addReply(c, shared.queued);
+  } else {
+    // 执行命令
+    call(c, REDIS_CALL_FULL);
+
+    // TODO c->woff = server.master_repl_offset;
+    // TODO 处理那些解除了阻塞的键
+    //if (listLength(server.ready_keys))
+    //    handleClientsBlockedOnLists();
+  }
+
   return REDIS_OK;
 }
 
