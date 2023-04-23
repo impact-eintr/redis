@@ -5,6 +5,7 @@
 #include "anet.h"
 #include "color.h"
 #include "dict.h"
+#include "util.h"
 #include "zmalloc.h"
 
 #include <string.h>
@@ -557,7 +558,17 @@ void createSharedObjects() {
   shared.colon = createObject(REDIS_STRING, sdsnew(":"));
   shared.plus = createObject(REDIS_STRING, sdsnew("+"));
 
-  // TODO 常用SELECT命令
+  // 常用 SELECT 命令
+  for (j = 0; j < REDIS_SHARED_SELECT_CMDS; j++) {
+    char dictid_str[64];
+    int dictid_len;
+
+    dictid_len = ll2string(dictid_str, sizeof(dictid_str), j);
+    shared.select[j] = createObject(
+        REDIS_STRING,
+        sdscatprintf(sdsempty(), "*2\r\n$6\r\nSELECT\r\n$%d\r\n%s\r\n",
+                     dictid_len, dictid_str));
+  }
 
   // 常用命令
   shared.del = createStringObject("DEL", 3);
@@ -571,7 +582,19 @@ void createSharedObjects() {
     shared.integers[j]->encoding = REDIS_ENCODING_INT;
   }
 
-  // TODO 其他
+  // 常用长度 bulk 或者 multi bulk 回复
+  for (j = 0; j < REDIS_SHARED_BULKHDR_LEN; j++) {
+    shared.mbulkhdr[j] = createObject(REDIS_STRING,
+                                      sdscatprintf(sdsempty(),"*%d\r\n",j));
+    shared.bulkhdr[j] = createObject(REDIS_STRING,
+                                     sdscatprintf(sdsempty(),"$%d\r\n",j));
+  }
+  /* The following two shared objects, minstring and maxstrings, are not
+   * actually used for their value but as a special object meaning
+   * respectively the minimum possible string and the maximum possible
+   * string in string comparisons for the ZRANGEBYLEX command. */
+  shared.minstring = createStringObject("minstring",9);
+  shared.maxstring = createStringObject("maxstring",9);
 }
 
 void initServerConfig() {

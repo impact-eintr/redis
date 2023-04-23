@@ -151,7 +151,7 @@ int getGenericCommand(redisClient *c) {
     return REDIS_ERR;
   } else {
     // 类型正确，向客户端返回对象的值
-    // TODO addReplyBulk(c, o);
+    addReplyBulk(c, o);
     return REDIS_OK;
   }
 }

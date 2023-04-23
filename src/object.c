@@ -97,7 +97,27 @@ robj *createEmbeddedStringObject(char *ptr, size_t len) {
   return o;
 }
 
-robj *dupStringObject(robj *o);
+// 返回一个非共享的字符串
+robj *dupStringObject(robj *o) {
+  robj *d;
+  redisAssert(o->type == REDIS_STRING);
+
+  switch (o->encoding) {
+    case REDIS_ENCODING_RAW:
+      return createRawStringObject(o->ptr, sdslen(o->ptr));
+    case REDIS_ENCODING_EMBSTR:
+      return createEmbeddedStringObject(o->ptr, sdslen(o->ptr));
+    case REDIS_ENCODING_INT:
+      d = createObject(REDIS_STRING, NULL);
+      d->encoding = REDIS_ENCODING_INT;
+      d->ptr = o->ptr;
+      return d;
+    default:
+      redisPanic("Wrong encoding,");
+      break;
+  }
+}
+
 int isObjectRepresentableAsLongLong(robj *o, long long *llongval);
 
 robj *tryObjectEncoding(robj *o) {
@@ -135,8 +155,36 @@ robj *tryObjectEncoding(robj *o) {
   return o;
 }
 
-robj *getDecodedObject(robj *o);
-size_t stringObjectLen(robj *o);
+robj *getDecodedObject(robj *o) {
+  robj *dec;
+  if (sdsEncodedObject(o)) {
+    incrRefCount(o);
+    return o;
+  }
+  // 解码对象
+  if (o->type == REDIS_STRING && o->encoding == REDIS_ENCODING_INT) {
+    char buf[32];
+
+    ll2string(buf, 32, (long)o->ptr);
+    dec = createStringObject(buf, strlen(buf));
+    return dec;
+  } else {
+    redisPanic("Unknown encoding type.");
+  }
+}
+
+
+// 返回字符串对象中值的长度
+size_t stringObjectLen(robj *o) {
+  redisAssertWithInfo(NULL, o, o->type == REDIS_STRING);
+
+  if (sdsEncodedObject(o)) {
+    return sdslen(o->ptr);
+  } else {
+    char buf[32];
+    return ll2string(buf, 32, (long)o->ptr);
+  }
+}
 
 robj *createStringObjectFromLongLong(long long value) {
   robj *o;

@@ -322,13 +322,12 @@ void addReply(redisClient *c, robj *obj) {
   if (prepareClientToWrite(c) != REDIS_OK) {
     return;
   }
-
+  printf("%s\n", (char *)obj->ptr);
   if (sdsEncodedObject(obj)) {
     if (_addReplyToBuffer(c, obj->ptr, sdslen(obj->ptr)) != REDIS_OK) {
       _addReplyObjectToList(c, obj);
     }
   } else if (obj->encoding == REDIS_ENCODING_INT) {
-    printf("测试  INT %s\n", (char *)obj->ptr);
     // 优化，如果 c->buf 中有等于或多于 32 个字节的空间
     // 那么将整数直接以字符串的形式复制到 c->buf 中
     if (listLength(c->reply) == 0 && (sizeof(c->buf) - c->bufpos) >= 32) {
@@ -596,10 +595,6 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
   server.current_client = NULL;
 }
 
-void addReplyBulk(redisClient *c, robj *obj);
-void addReplyBulkCString(redisClient *c, char *s);
-void addReplyBulkCBuffer(redisClient *c, void *p, size_t len);
-void addReplyBulkLongLong(redisClient *c, long long ll);
 void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask);
 void addReply(redisClient *c, robj *obj);
 void addReplySds(redisClient *c, sds s);
@@ -644,17 +639,6 @@ void addReplyStatusLength(redisClient *c, char *s, size_t len) {
   addReplyString(c, "\r\n", 2);
 }
 
-/*
- * 返回一个状态回复
- *
- * 例子 +OK\r\n
- */
-void addReplyStatus(redisClient *c, char *status) {
-  addReplyStatusLength(c, status, strlen(status));
-}
-
-void addReplyDouble(redisClient *c, double d);
-
 /* Add a long long as integer reply or bulk len / multi bulk count.
  *
  * 添加一个 long long 为整数回复，或者 bulk 或 multi bulk 的数目
@@ -673,12 +657,9 @@ void addReplyLongLongWithPrefix(redisClient *c, long long ll, char prefix) {
   char buf[128];
   int len;
 
-  /* Things like $3\r\n or *2\r\n are emitted very often by the protocol
-   * so we have a few shared objects to use if the integer is small
-   * like it is most of the times. */
   if (prefix == '*' && ll < REDIS_SHARED_BULKHDR_LEN) {
     // 多条批量回复
-    addReply(c, shared.mbulkhdr[ll]);
+    addReply(c, shared.bulkhdr[ll]);
     return;
   } else if (prefix == '$' && ll < REDIS_SHARED_BULKHDR_LEN) {
     // 批量回复
@@ -687,11 +668,61 @@ void addReplyLongLongWithPrefix(redisClient *c, long long ll, char prefix) {
   }
 
   buf[0] = prefix;
-  len = ll2string(buf + 1, sizeof(buf) - 1, ll);
-  buf[len + 1] = '\r';
-  buf[len + 2] = '\n';
-  addReplyString(c, buf, len + 3);
+  len = ll2string(buf+1, sizeof(buf)-1, ll);
+  buf[len+1] = '\r';
+  buf[len+2] = '\n';
+  addReplyString(c, buf, len+3);
 }
+
+void addReplyBulkLen(redisClient *c, robj *obj) {
+  size_t len;
+
+  if (sdsEncodedObject(obj)) {
+    len = sdslen(obj->ptr);
+  } else {
+    long n = (long)obj->ptr;
+
+    len = 1;
+    if (n < 0) {
+      len++;
+      n = -n; // 转正数
+    }
+    while((n = n/10) != 0) {
+      len++; // 统计long的字符串长度
+    }
+  }
+
+  if (len < REDIS_SHARED_BULKHDR_LEN) {
+    printf("测试开始\n");
+    addReply(c, shared.bulkhdr[len]);
+    printf("测试结束\n");
+  } else {
+    addReplyLongLongWithPrefix(c, len, '$');
+  }
+}
+
+void addReplyBulk(redisClient *c, robj *obj) {
+  addReplyBulkLen(c, obj);
+  addReply(c, obj);
+  addReply(c, shared.crlf);
+}
+
+
+void addReplyBulkCString(redisClient *c, char *s);
+void addReplyBulkCBuffer(redisClient *c, void *p, size_t len);
+void addReplyBulkLongLong(redisClient *c, long long ll);
+
+/*
+ * 返回一个状态回复
+ *
+ * 例子 +OK\r\n
+ */
+void addReplyStatus(redisClient *c, char *status) {
+  addReplyStatusLength(c, status, strlen(status));
+}
+
+void addReplyDouble(redisClient *c, double d);
+
 
 /*
  * 返回一个整数回复
