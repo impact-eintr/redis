@@ -488,6 +488,20 @@ void echoCommand(redisClient *c) {
   // TODO
 }
 
+// 每次处理事件前执行
+void beforeSleep(struct aeEventLoop *eventLoop) {
+  // TODO
+}
+
+int serveCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
+  int j;
+  REDIS_NOTUSED(eventLoop);
+  REDIS_NOTUSED(id);
+  REDIS_NOTUSED(clientData);
+
+
+}
+
 // ======================= 服务初始化 ========================
 void createSharedObjects() {
   int j;
@@ -734,11 +748,11 @@ void initServer() {
     server.rdb_child_pid = -1;
     server.aof_child_pid = -1;
 
-    // TODO 为 serverCron() 创建时间事件
-    //if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {
-    //  redisPanic("Can't create the serverCron time event.");
-    //  exit(1);
-    //}
+    // 为 serverCron() 创建时间事件
+    if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {
+      redisPanic("Can't create the serverCron time event.");
+      exit(1);
+    }
 
     for (j = 0;j < server.ipfd_count;j++) {
       if (aeCreateFileEvent(server.el, server.ipfd[j], AE_READABLE,
@@ -940,11 +954,6 @@ int processCommand(redisClient *c) {
   }
 
   return REDIS_OK;
-}
-
-// 每次处理事件前执行
-void beforeSleep(struct aeEventLoop *eventLoop) {
-  // TODO
 }
 
 
