@@ -493,13 +493,44 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
   // TODO
 }
 
-int serveCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
+void clientCron(void) {
+  printf("处理客户端\n");
+}
+
+void databaseesCron(void) {
+  printf("处理数据库\n");
+
+}
+
+void updateCachedTime() {
+  server.unixtime = time(NULL);
+  server.mstime = mstime();
+}
+
+/*
+** 主动清理过期键
+** 更新统计信息
+** 对数据库进行渐进式 ReHash
+** 触发 BGSAVE 或者 AOF 重写
+** 处理客户端超时
+** 复制重连
+** 。。。
+ */
+int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
   int j;
   REDIS_NOTUSED(eventLoop);
   REDIS_NOTUSED(id);
   REDIS_NOTUSED(clientData);
 
+  updateCachedTime();
 
+  server.lruclock = getLRUClock();
+
+  //clientCron();
+
+  //databaseesCron();
+
+  return 1000/server.hz;
 }
 
 // ======================= 服务初始化 ========================

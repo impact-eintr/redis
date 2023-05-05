@@ -640,6 +640,10 @@ struct redisServer
   int maxmemory_policy;  /* Policy for key eviction */
   int maxmemory_samples; /* Pricision of random sampling */
 
+  // Zip structure config serr redis.conf for more information
+  time_t unixtime;
+  long long mstime;
+
   /*  CLUSTER */
   int cluster_enabled;
 

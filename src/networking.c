@@ -270,7 +270,6 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         c->sentlen = 0;
       }
     } else {
-      printf("写数据\n");
       o = listNodeValue(listFirst(c->reply));
       objlen = sdslen(o->ptr);
       objmem = getStringObjectSdsUsedMemory(o);
@@ -314,7 +313,18 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
   }
 
   // 处理写入出错
+  if (nwritten == -1) {
+    printf("执行写事件 出错 %d\n", nwritten);
+  }
 
+  if (c->bufpos == 0 && listLength(c->reply) == 0) {
+    c->sentlen = 0;
+    aeDeleteFileEvent(server.el, c->fd, AE_WRITABLE);
+    // 关闭客户端
+    if (c->flags & REDIS_CLOSE_AFTER_REPLY) {
+      freeClient(c);
+    }
+  }
 }
 
 // 为客户端安装写处理器到事件循环

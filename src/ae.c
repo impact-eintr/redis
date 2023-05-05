@@ -270,7 +270,6 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
   }
   // 更新最后一次处理时间事件的时间
   eventLoop->lastTime = now;
-
   // 遍历链表
   // 执行那些已经到达的事件
   te = eventLoop->timeEventHead;
@@ -288,9 +287,11 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
     // 获取当前时间
     aeGetTime(&now_sec, &now_ms);
 
+
     // 如果当前时间等于或等于事件的执行时间，那么说明事件已到达，执行这个事件
     if (now_sec > te->when_sec ||
         (now_sec == te->when_sec && now_ms >= te->when_ms)) {
+
       int retval;
 
       id = te->id;
@@ -348,6 +349,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
       tvp = &tv;
       tvp->tv_sec = shortest->when_sec - now_sec;
       if (shortest->when_ms < now_ms) {
+        printf("过期 %ld %ld\n", shortest->when_ms, now_ms);
         tvp->tv_usec = ((shortest->when_ms + 1000) - now_ms) * 1000;
         tvp->tv_sec--;
       } else {
@@ -359,7 +361,8 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
         tvp->tv_sec = 0;
       if (tvp->tv_usec < 0)
         tvp->tv_usec = 0;
-    } else {// 没有时间事件
+
+    } else { // 没有时间事件
       if (flags & AE_DONT_WAIT) {
         tv.tv_sec = tv.tv_usec = 0;
         tvp = &tv;
@@ -370,7 +373,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
 
     // 处理文件事件 阻塞时间由tvp决定
     numevents = aeApiPoll(eventLoop, tvp);
-    for (j = 0;j < numevents;j++) {
+    for (j = 0; j < numevents; j++) {
       aeFileEvent *fe = &eventLoop->events[eventLoop->fired[j].fd];
 
       int mask = eventLoop->fired[j].mask;
@@ -382,29 +385,27 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
         // rfired 确保读/写事件只能执行其中一个
         rfired = 1;
         fe->rfileProc(eventLoop, fd, fe->clientData, mask);
-        printf("处理文件读事件\n");
-        sleep(1);
+        //printf("处理文件读事件\n");
       }
       // 写事件
       if (fe->mask & mask & AE_WRITABLE) {
         if (!rfired || fe->wfileProc != fe->rfileProc) {
           fe->wfileProc(eventLoop, fd, fe->clientData, mask);
-          printf("处理文件写事件\n");
-          sleep(1);
+          //printf("处理文件写事件\n");
         }
       }
 
       processed++;
     }
-
   }
 
   // 执行时间事件
   if (flags & AE_TIME_EVENTS) {
     processed += processTimeEvents(eventLoop);
+    printf("就绪事件 %d\n", numevents);
   }
 
-    return processed;
+  return processed;
 }
 
 /* Wait for milliseconds until the given file descriptor becomes
