@@ -349,7 +349,6 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
       tvp = &tv;
       tvp->tv_sec = shortest->when_sec - now_sec;
       if (shortest->when_ms < now_ms) {
-        printf("过期 %ld %ld\n", shortest->when_ms, now_ms);
         tvp->tv_usec = ((shortest->when_ms + 1000) - now_ms) * 1000;
         tvp->tv_sec--;
       } else {
@@ -402,7 +401,6 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
   // 执行时间事件
   if (flags & AE_TIME_EVENTS) {
     processed += processTimeEvents(eventLoop);
-    printf("就绪事件 %d\n", numevents);
   }
 
   return processed;

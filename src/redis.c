@@ -526,9 +526,9 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
   server.lruclock = getLRUClock();
 
-  //clientCron();
+  clientCron();
 
-  //databaseesCron();
+  databaseesCron();
 
   return 1000/server.hz;
 }

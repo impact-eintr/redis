@@ -4,9 +4,11 @@
 #include "sds.h"
 #include "util.h"
 #include "ae.h"
+#include "version.h"
 #include "zmalloc.h"
 #include "anet.h"
 
+#include <asm-generic/errno-base.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -314,7 +316,17 @@ void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask) {
 
   // 处理写入出错
   if (nwritten == -1) {
-    printf("执行写事件 出错 %d\n", nwritten);
+    if (errno == EAGAIN) {
+      nwritten = 0;
+    } else {
+      redisLog(REDIS_VERBOSE, "Error writing to client: %s", strerror(errno));
+      freeClient(c);
+      return;
+    }
+  }
+
+  if (totwritten > 0) {
+    // TODO 复制
   }
 
   if (c->bufpos == 0 && listLength(c->reply) == 0) {
@@ -451,7 +463,7 @@ int processInlineBuffer(redisClient *c) {
   if (newline == NULL) {
     if (sdslen(c->querybuf) > REDIS_INLINE_MAX_SIZE) {
       addReplyError(c, "Protocol error: too big inline request");
-      //TODO setProtocolError(c, 0);
+      setProtocolError(c, 0);
     }
     return REDIS_ERR;
   }
@@ -473,7 +485,7 @@ int processInlineBuffer(redisClient *c) {
   sdsfree(aux);
   if (argv == NULL) {
     addReplyError(c, "Protocol error: unbalanced quotes in request");
-    //setProtocolError(c, 0);
+    setProtocolError(c, 0);
     return REDIS_ERR;
   }
 
@@ -552,6 +564,17 @@ void processInputBuffer(redisClient *c) {
     }
   }
 }
+
+// 如果在读入协议内容的时候 发现不符合协议
+static void setProtocolError(redisClient *c, int pos) {
+  if (server.verbosity >= REDIS_VERBOSE) {
+    // TODO
+    redisLog(REDIS_VERBOSE, "Protocol error from client: ");
+  }
+  c->flags |= REDIS_CLOSE_AFTER_REPLY;
+  sdsrange(c->querybuf, pos, -1);
+}
+
 
 // 事件处理器 命令请求处理器
 void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
