@@ -797,11 +797,25 @@ int dictRehash(dict *d, int n) {
   return 1;
 }
 
-int dictRehashMilliseconds(dict *d, int ms) {
+long long timeInMillseconds(void) {
   struct timeval tv;
 
   gettimeofday(&tv, NULL);
   return (((long long)tv.tv_sec) * 1000) + (tv.tv_usec / 1000);
+}
+
+// 在 ms 时间内 以100 step 为单位进行Rehash
+int dictRehashMilliseconds(dict *d, int ms) {
+  long long start = timeInMillseconds();
+  int rehashes = 0;
+
+  while(dictRehash(d, 100)) {
+    rehashes+=100;
+    if (timeInMillseconds()-start > ms) {
+      break;
+    }
+  }
+  return rehashes;
 }
 
 void dictSetHashFunctionSeed(uint32_t seed) { dict_hash_function_seed = seed; }

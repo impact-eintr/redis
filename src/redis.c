@@ -300,6 +300,51 @@ struct redisCommand redisCommandTable[] = {
     {"echo", echoCommand, 2, "r", 0, NULL, 0, 0, 0, 0, 0}
 };
 
+
+/*============================ Utility functions ============================ */
+
+/* Low level logging. To use only for very big messages, otherwise
+ * redisLog() is to prefer. */
+void redisLogRaw(int level, const char *msg) {
+  const int syslogLevelMap[] = { LOG_DEBUG, LOG_INFO, LOG_NOTICE, LOG_WARNING };
+
+  // TODO 开启syslog
+  switch (syslogLevelMap[level]) {
+    case LOG_DEBUG:
+      printf(BLUESTR("%s\n"), msg);
+      break;
+    case LOG_INFO:
+      printf(GREENSTR("%s\n"), msg);
+      break;
+    case LOG_NOTICE:
+      printf(YELLOWSTR("%s\n"), msg);
+      break;
+    case LOG_WARNING:
+      printf(REDSTR("%s\n"), msg);
+      break;
+    default:
+      printf(REDSTR("%s\n"), msg);
+  }
+}
+
+/* Like redisLogRaw() but with printf-alike support. This is the function that
+ * is used across the code. The raw version is only used in order to dump
+ * the INFO output on crash. */
+void redisLog(int level, const char *fmt, ...) {
+  va_list ap;
+  char msg[REDIS_MAX_LOGMSG_LEN];
+
+  if ((level&0xff) < server.verbosity) return;
+
+  va_start(ap, fmt);
+  vsnprintf(msg, sizeof(msg), fmt, ap);
+  va_end(ap);
+
+  redisLogRaw(level,msg);
+}
+
+
+
 /* Return the UNIX time in microseconds */
 // 返回微秒格式的 UNIX 时间
 // 1 秒 = 1 000 000 微秒
@@ -318,9 +363,6 @@ long long ustime(void) {
 // 1 秒 = 1 000 毫秒
 long long mstime(void) { return ustime() / 1000; }
 
-unsigned int getLRUClock(void) {
-  return (mstime()/REDIS_LRU_CLOCK_RESOLUTION) & REDIS_LRU_CLOCK_MAX;
-}
 
 
 /*          SDS DICT            */
@@ -400,106 +442,148 @@ dictType keyptrDictType = {
 
 /*             KEY PTR DICT           */
 
-// 根据 redis.c 文件顶部的命令列表，创建命令表
-void populateCommandTable(void) {
-  int j;
+int htNeedsResize(dict *dict) {
+  long long size, used;
+  size = dictSlots(dict);
+  used = dictSize(dict);
+  return (size && used && size > DICT_HT_INITIAL_SIZE &&
+          (used * 100 / size < REDIS_HT_MINFILL));
+}
 
-  // 命令的数量
-  int numcommands = sizeof(redisCommandTable) / sizeof(struct redisCommand);
-
-  for (j = 0; j < numcommands; j++) {
-
-    // 指定命令
-    struct redisCommand *c = redisCommandTable + j;
-
-    // 取出字符串 FLAG
-    char *f = c->sflags;
-
-    int retval1, retval2;
-
-    // 根据字符串 FLAG 生成实际 FLAG
-    while (*f != '\0') {
-      switch(*f) {
-      case 'w':
-        c->flags |= REDIS_CMD_WRITE;
-        break;
-      case 'r':
-        c->flags |= REDIS_CMD_READONLY;
-        break;
-      case 'm':
-        c->flags |= REDIS_CMD_DENYOOM;
-        break;
-      case 'a':
-        c->flags |= REDIS_CMD_ADMIN;
-        break;
-      case 'p':
-        c->flags |= REDIS_CMD_PUBSUB;
-        break;
-      case 's':
-        c->flags |= REDIS_CMD_NOSCRIPT;
-        break;
-      case 'R':
-        c->flags |= REDIS_CMD_RANDOM;
-        break;
-      case 'S':
-        c->flags |= REDIS_CMD_SORT_FOR_SCRIPT;
-        break;
-      case 'l':
-        c->flags |= REDIS_CMD_LOADING;
-        break;
-      case 't':
-        c->flags |= REDIS_CMD_STALE;
-        break;
-      case 'M':
-        c->flags |= REDIS_CMD_SKIP_MONITOR;
-        break;
-      case 'k':
-        c->flags |= REDIS_CMD_ASKING;
-        break;
-      default:
-        redisPanic("Unsupported command flag");
-        break;
-      }
-      f++;
-    }
-
-    // 将命令关联到命令表
-    retval1 = dictAdd(server.commands, sdsnew(c->name), c);
-
-    /* Populate an additional dictionary that will be unaffected
-     * by rename-command statements in redis.conf.
-     *
-     * 将命令也关联到原始命令表
-     *
-     * 原始命令表不会受 redis.conf 中命令改名的影响
-     */
-    retval2 = dictAdd(server.orig_commands, sdsnew(c->name), c);
-
-    redisAssert(retval1 == DICT_OK && retval2 == DICT_OK);
+// 尝试缩小字典体积来节约内存
+void tryResizeHashTables(int dbid) {
+  if (htNeedsResize(server.db[dbid].dict)) {
+    dictResize(server.db[dbid].dict);
+  }
+  if (htNeedsResize(server.db[dbid].expires)) {
+    dictResize(server.db[dbid].expires);
   }
 }
 
-void pingCommand(redisClient *c) {
-  // TODO
-  printf("PONG\n");
+// 如果服务器长期没有执行命令 需要主动进行Rehash
+int incrementallyRehash(int dbid) {
+  if (dictIsRehashing(server.db[dbid].dict)) {
+    dictRehashMilliseconds(server.db[dbid].dict, 1);
+    return 1;
+  }
+
+  if (dictIsRehashing(server.db[dbid].expires)) {
+    dictRehashMilliseconds(server.db[dbid].expires, 1);
+    return 1;
+  }
+
+  return 0;
 }
 
-void echoCommand(redisClient *c) {
-  // TODO
+// 有后台备份进程时 停止扩容
+void updateDictResizePolicy(void) {
+  if (server.rdb_child_pid == -1 && server.aof_child_pid) {
+    dictEnableResize();
+  } else {
+    dictDisableResize();
+  }
 }
 
-// 每次处理事件前执行
-void beforeSleep(struct aeEventLoop *eventLoop) {
-  // TODO
+/* =========================== Cron: called every 100 ms ============================ */
+void activeExpireCycle(int type) {
+  // 静态变量，用来累积函数连续执行时的数据
+  static unsigned int current_db = 0;   /* Last DB tested. */
+  static int timelimit_exit = 0;        /* Time limit hit in previous call? */
+  static long long last_fast_cycle = 0; /* When last fast cycle ran. */
+
+  unsigned int j, iteration = 0;
+  // 默认每次处理的数据库数量
+  unsigned int dbs_per_call = REDIS_DBCRON_DBS_PER_CALL;
+  // 函数开始的时间
+  long long start = ustime(), timelimit;
+
+  // 快速模式
+  if (type == ACTIVE_EXPIRE_CYCLE_FAST) {
+    // TODO 快速过期
+  }
+  // 遍历数据库
+  for (j = 0;j < dbs_per_call;j++) {
+
+  }
+}
+
+unsigned int getLRUClock(void) {
+  return (mstime() / REDIS_LRU_CLOCK_RESOLUTION) & REDIS_LRU_CLOCK_MAX;
+}
+
+int clientsCronHandleTimeout(redisClient *c) {
+  time_t now = server.unixtime;
+  // 获取当前时间
+  if (server.maxidletime &&
+    (now - c->lastinteraction > server.maxidletime)) {
+    redisLog(REDIS_VERBOSE, "Closing idle client");
+    freeClient(c);
+    return 1;
+  } else if (c->flags & REDIS_BLOCKED) {
+    // 阻塞的情况 TODO
+  }
+
+  return 0;
+}
+
+int clientsCronResizeQueryBuffer(redisClient *c) {
+  size_t querybuf_size = sdsAllocSize(c->querybuf);
+  time_t idletime = server.unixtime - c->lastinteraction;
+
+  /* There are two conditions to resize the query buffer:
+   *
+   * 符合以下两个条件的话，执行大小调整：
+   *
+   * 1) Query buffer is > BIG_ARG and too big for latest peak.
+   *    查询缓冲区的大小大于 BIG_ARG 以及 querybuf_peak
+   *
+   * 2) Client is inactive and the buffer is bigger than 1k.
+   *    客户端不活跃，并且缓冲区大于 1k 。
+   */
+  if (((querybuf_size > REDIS_MBULK_BIG_ARG) &&
+       (querybuf_size / (c->querybuf_peak + 1)) > 2) ||
+      (querybuf_size > 1024 && idletime > 2)) {
+    /* Only resize the query buffer if it is actually wasting space. */
+    if (sdsavail(c->querybuf) > 1024) {
+      c->querybuf = sdsRemoveFreeSpace(c->querybuf);
+    }
+  }
+
+  /* Reset the peak again to capture the peak memory usage in the next
+   * cycle. */
+  // 重置峰值
+  c->querybuf_peak = 0;
+
+  return 0;
 }
 
 void clientCron(void) {
-  printf("处理客户端\n");
+  int numclients = listLength(server.clients);
+  int iterations = numclients / (server.hz*10);
+  if (iterations < 50) { // 至少要处理50个客户端
+    iterations = (numclients < 50) ? numclients : 50;
+  }
+
+  while(listLength(server.clients) && iterations--) {
+    redisClient *c;
+    listNode *head;
+
+    listRotate(server.clients); // 反转链表
+    head = listFirst(server.clients);
+    c = listNodeValue(head);
+    // 检查客户端是否超时
+    if (clientsCronHandleTimeout(c)) continue;
+    // 根据情况缩小客户端查询缓冲区的大小 TODO
+    if (clientsCronResizeQueryBuffer(c)) continue;
+
+  }
 }
 
+// 删除过期键 调整大小 主动渐进式Rehash
 void databaseesCron(void) {
-  printf("处理数据库\n");
+  redisLog(REDIS_VERBOSE, "处理数据库");
 
+  activeExpireCycle();
 }
 
 void updateCachedTime() {
@@ -531,6 +615,13 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
   databaseesCron();
 
   return 1000/server.hz;
+}
+
+
+
+// 每次处理事件前执行
+void beforeSleep(struct aeEventLoop *eventLoop) {
+  // TODO
 }
 
 // ======================= 服务初始化 ========================
@@ -795,48 +886,6 @@ void initServer() {
 
 }
 
-/*============================ Utility functions ============================ */
-
-/* Low level logging. To use only for very big messages, otherwise
- * redisLog() is to prefer. */
-void redisLogRaw(int level, const char *msg) {
-  const int syslogLevelMap[] = { LOG_DEBUG, LOG_INFO, LOG_NOTICE, LOG_WARNING };
-
-  // TODO 开启syslog
-  switch (syslogLevelMap[level]) {
-    case LOG_DEBUG:
-      printf(BLUESTR("%s\n"), msg);
-      break;
-    case LOG_INFO:
-      printf(GREENSTR("%s\n"), msg);
-      break;
-    case LOG_NOTICE:
-      printf(YELLOWSTR("%s\n"), msg);
-      break;
-    case LOG_WARNING:
-      printf(REDSTR("%s\n"), msg);
-      break;
-    default:
-      printf(REDSTR("%s\n"), msg);
-  }
-}
-
-/* Like redisLogRaw() but with printf-alike support. This is the function that
- * is used across the code. The raw version is only used in order to dump
- * the INFO output on crash. */
-void redisLog(int level, const char *fmt, ...) {
-  va_list ap;
-  char msg[REDIS_MAX_LOGMSG_LEN];
-
-  if ((level&0xff) < server.verbosity) return;
-
-  va_start(ap, fmt);
-  vsnprintf(msg, sizeof(msg), fmt, ap);
-  va_end(ap);
-
-  redisLogRaw(level,msg);
-}
-
 /* ========================== Redis OP Array API ============================ */
 
 void redisOpArrayInit(redisOpArray *oa) {
@@ -935,6 +984,7 @@ void call(redisClient *c, int flags) {
   server.stat_numcommands++;
 }
 
+
 int processCommand(redisClient *c) {
   if (!strcasecmp(c->argv[0]->ptr, "quit")) {
       addReply(c, shared.ok);
@@ -986,6 +1036,106 @@ int processCommand(redisClient *c) {
 
   return REDIS_OK;
 }
+
+
+/* ================================ Shutdown ================================  */
+
+/* ================================ Commands ================================  */
+
+void pingCommand(redisClient *c) {
+  // TODO
+  printf("PONG\n");
+}
+
+void echoCommand(redisClient *c) {
+  // TODO
+}
+
+
+// 根据 redis.c 文件顶部的命令列表，创建命令表
+void populateCommandTable(void) {
+  int j;
+
+  // 命令的数量
+  int numcommands = sizeof(redisCommandTable) / sizeof(struct redisCommand);
+
+  for (j = 0; j < numcommands; j++) {
+
+    // 指定命令
+    struct redisCommand *c = redisCommandTable + j;
+
+    // 取出字符串 FLAG
+    char *f = c->sflags;
+
+    int retval1, retval2;
+
+    // 根据字符串 FLAG 生成实际 FLAG
+    while (*f != '\0') {
+      switch(*f) {
+      case 'w':
+        c->flags |= REDIS_CMD_WRITE;
+        break;
+      case 'r':
+        c->flags |= REDIS_CMD_READONLY;
+        break;
+      case 'm':
+        c->flags |= REDIS_CMD_DENYOOM;
+        break;
+      case 'a':
+        c->flags |= REDIS_CMD_ADMIN;
+        break;
+      case 'p':
+        c->flags |= REDIS_CMD_PUBSUB;
+        break;
+      case 's':
+        c->flags |= REDIS_CMD_NOSCRIPT;
+        break;
+      case 'R':
+        c->flags |= REDIS_CMD_RANDOM;
+        break;
+      case 'S':
+        c->flags |= REDIS_CMD_SORT_FOR_SCRIPT;
+        break;
+      case 'l':
+        c->flags |= REDIS_CMD_LOADING;
+        break;
+      case 't':
+        c->flags |= REDIS_CMD_STALE;
+        break;
+      case 'M':
+        c->flags |= REDIS_CMD_SKIP_MONITOR;
+        break;
+      case 'k':
+        c->flags |= REDIS_CMD_ASKING;
+        break;
+      default:
+        redisPanic("Unsupported command flag");
+        break;
+      }
+      f++;
+    }
+
+    // 将命令关联到命令表
+    retval1 = dictAdd(server.commands, sdsnew(c->name), c);
+
+    /* Populate an additional dictionary that will be unaffected
+     * by rename-command statements in redis.conf.
+     *
+     * 将命令也关联到原始命令表
+     *
+     * 原始命令表不会受 redis.conf 中命令改名的影响
+     */
+    retval2 = dictAdd(server.orig_commands, sdsnew(c->name), c);
+
+    redisAssert(retval1 == DICT_OK && retval2 == DICT_OK);
+  }
+}
+
+
+
+
+
+
 
 
 #if 1
