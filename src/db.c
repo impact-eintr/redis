@@ -21,7 +21,6 @@ void propagateExpire(redisDb *db, robj *key) {
 int expireIfNeeded(redisDb *db, robj *key) {
   mstime_t when = getExpire(db, key);
   mstime_t now;
-
   if (when < 0) {
     return 0;
   }
@@ -32,7 +31,6 @@ int expireIfNeeded(redisDb *db, robj *key) {
   // TODO 处理附属节点
 
   if (now <= when) {
-    printf("未过期\n");
     return 0; // 未过期
   }
 
@@ -63,7 +61,6 @@ void setExpire(redisDb *db, robj *key, long long when) {
 
   de = dictReplaceRaw(db->expires, dictGetKey(kde));
 
-  printf("expire: %lld", when);
   dictSetSignedIntegerVal(de, when); // 设置键的过期时间
 }
 

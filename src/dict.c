@@ -82,6 +82,7 @@ dict *dictCreate(dictType *type, void *privDataPtr) {
  *
  * T = O(N)
  */
+#include "redis.h"
 int dictExpand(dict *d, unsigned long size){
   // 新的哈希表
   dictht n;
@@ -104,6 +105,7 @@ int dictExpand(dict *d, unsigned long size){
     // rehash
     d->ht[1] = n;
     d->rehashidx = 0; // 开启 rehash
+    redisLog(REDIS_NOTICE, "REHASH");
   }
 
   return DICT_OK;
@@ -211,8 +213,9 @@ static int dictGenericDelete(dict *d, const void *key, int nofree) {
     return DICT_ERR;
 
   // 进行 单步rehash
-  if (dictIsRehashing(d))
+  if (dictIsRehashing(d)) {
     _dictRehashStep(d);
+  }
 
   // 计算哈希值
   h = dictHashKey(d, key);
@@ -246,6 +249,7 @@ static int dictGenericDelete(dict *d, const void *key, int nofree) {
       prevHe = he;
       he = he->next;
     }
+    if (!dictIsRehashing(d)) break;
   }
   // 没找到
   return DICT_ERR;
@@ -253,6 +257,7 @@ static int dictGenericDelete(dict *d, const void *key, int nofree) {
 
 // 删除key 释放value
 int dictDelete(dict *d, const void *key) {
+  dictFind(d, key);
   return dictGenericDelete(d, key, 0);
 }
 
@@ -351,7 +356,6 @@ dictEntry *dictFind(dict *d, const void *key) {
 void *dictFetchValue(dict *d, const void *key) {
   dictEntry *he;
   he = dictFind(d, key);
-  printf("%s\n", (char *)he->key);
   return he ? dictGetVal(he) : NULL;
 }
 

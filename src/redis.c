@@ -461,6 +461,8 @@ void tryResizeHashTables(int dbid) {
 }
 
 // 如果服务器长期没有执行命令 需要主动进行Rehash
+// 过期键是通过在set/get过程中检查的 如果长时间访问某些键 他们过期后任将占用内存
+// 通过定时任务 在Rehash过程中检查整张表 删除过期键
 int incrementallyRehash(int dbid) {
   if (dictIsRehashing(server.db[dbid].dict)) {
     dictRehashMilliseconds(server.db[dbid].dict, 1);
@@ -580,10 +582,38 @@ void clientCron(void) {
 }
 
 // 删除过期键 调整大小 主动渐进式Rehash
-void databaseesCron(void) {
-  redisLog(REDIS_VERBOSE, "处理数据库");
+void databasesCron(void) {
 
-  activeExpireCycle();
+  if (server.active_expire_enabled/* && server.masterhost == NULL*/) {
+    activeExpireCycle(ACTIVE_EXPIRE_CYCLE_SLOW); // 尽可能多地删除过期键
+  }
+
+  if (server.rdb_child_pid == -1 && server.aof_child_pid == -1) {
+    static unsigned int resize_db = 0;
+    static unsigned int rehash_db = 0;
+    unsigned int dbs_per_call = REDIS_DBCRON_DBS_PER_CALL;
+    unsigned int j;
+
+    if (dbs_per_call > server.dbnum) {
+      dbs_per_call = server.dbnum;
+    }
+
+    for (j = 0;j < dbs_per_call;j++) {
+      tryResizeHashTables(resize_db % server.dbnum);
+      resize_db++;
+    }
+
+    if (server.activerehashing) {
+      for (j = 0;j < dbs_per_call;j++) {
+        int work_done = incrementallyRehash(rehash_db % server.dbnum);
+        rehash_db++;
+        if (work_done) {
+          redisLog(REDIS_VERBOSE, "清理过期键");
+          break;
+        }
+      }
+    }
+  }
 }
 
 void updateCachedTime() {
@@ -612,7 +642,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
   clientCron();
 
-  databaseesCron();
+  databasesCron();
 
   return 1000/server.hz;
 }
@@ -747,8 +777,9 @@ void initServerConfig() {
   server.ipfd_count = 0;
   server.dbnum = REDIS_DEFAULT_DBNUM;
   server.tcpkeepalive = REDIS_DEFAULT_TCP_KEEPALIVE;
+  server.active_expire_enabled = 1;
 
-
+  server.activerehashing = REDIS_DEFAULT_ACTIVE_REHASHING;
   server.maxclients = REDIS_MAX_CLIENTS;
 
   server.commands = dictCreate(&commandTableDictType, NULL);

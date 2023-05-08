@@ -43,6 +43,7 @@ void setGenericCommand(redisClient *c, int flags, robj *key, robj *val,
                        robj *abort_reply) {
   long long milliseconds = 0;
 
+  // FIXME 过期键没有保存到 db.expires 中
   if (expire) {
     if (getLongLongFromObjectOrReply(c, expire, &milliseconds, NULL) != REDIS_OK) {
       return;
@@ -70,11 +71,11 @@ void setGenericCommand(redisClient *c, int flags, robj *key, robj *val,
   setKey(c->db, key, val);
 
   server.dirty++;
-  if (expire)
+  if (expire) {
     setExpire(c->db, key, mstime()+milliseconds);
+  }
 
   // TODO 发送事件通知
-
 
   addReply(c, ok_reply ? ok_reply : shared.ok);
 }

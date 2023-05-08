@@ -726,9 +726,7 @@ void addReplyBulkLen(redisClient *c, robj *obj) {
   }
 
   if (len < REDIS_SHARED_BULKHDR_LEN) {
-    printf("测试开始\n");
     addReply(c, shared.bulkhdr[len]);
-    printf("测试结束\n");
   } else {
     addReplyLongLongWithPrefix(c, len, '$');
   }

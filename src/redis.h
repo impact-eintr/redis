@@ -434,7 +434,12 @@ struct redisServer
   // 最近一次使用时钟
   unsigned lruclock:REDIS_LRU_BITS;
 
-  // TODO
+  // 关闭服务器
+  int shutdown_asap;
+
+  int activerehashing; // databaseCron进行渐进式Rehash
+
+  char *pidfile; // pid文件
 
   int sentinel_mode; // 服务是否运行在哨兵模式
 
