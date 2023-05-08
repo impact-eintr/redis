@@ -224,7 +224,13 @@ robj *createZsetZiplistObject(void);
 
 int getLongFromObjectOrReply(redisClient *c, robj *o, long *target,
                              const char *msg);
-int checkType(redisClient *c, robj *o, int type);
+int checkType(redisClient *c, robj *o, int type) {
+  if (o->type != type) {
+    addReply(c, shared.wrongtypeerr);
+    return 1;
+  }
+  return 0;
+}
 
 int getLongLongFromObjectOrReply(redisClient *c, robj *o, long long *target,
                                  const char *msg) {

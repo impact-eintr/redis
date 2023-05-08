@@ -8,6 +8,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// return 1 when exist
+int dbExists(redisDb *db, robj *key) {
+  return dictFind(db->dict, key->ptr) != NULL;
+}
+
 int removeExpire(redisDb *db, robj *key) {
   redisAssertWithInfo(NULL, key, dictFind(db->dict, key->ptr) != NULL);
 
@@ -242,14 +247,34 @@ void delCommand(redisClient *c) {
       deleted++;
     }
   }
+
+  addReplyLongLong(c, deleted);
 }
 
 void existsCommand(redisClient *c) {
+  expireIfNeeded(c->db, c->argv[1]);
 
+  if (dbExists(c->db, c->argv[1])) {
+    addReply(c, shared.cone);
+  } else {
+    addReply(c, shared.czero);
+  }
 }
 
 void selectCommand(redisClient *c) {
+  long id;
 
+  if (getLongFromObjectOrReply(c, c->argv[1], &id, "invalid DB index") !=
+      REDIS_OK) {
+    addReplyError(c, "invalid DB index");
+    return;
+  }
+
+  if (selectDb(c, id) == REDIS_ERR) {
+    addReplyError(c, "index DB index");
+  } else {
+    addReply(c, shared.ok);
+  }
 }
 
 void randomkeyCommand(redisClient *c) {
