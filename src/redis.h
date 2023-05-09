@@ -171,6 +171,11 @@
 #define REDIS_REQ_INLINE 1
 #define REDIS_REQ_MULTIBULK 2
 
+
+/* List related stuff */
+#define REDIS_HEAD 0
+#define REDIS_TAIL 1
+
 /* Log levels */
 #define REDIS_DEBUG 0
 #define REDIS_VERBOSE 1

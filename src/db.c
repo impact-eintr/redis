@@ -184,9 +184,39 @@ int dbDelete(redisDb *db, robj *key) {
   }
 }
 
-robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o);
-long long emptyDb(void(callback)(void*)) {
+robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o) {
+  redisAssert(o->type == REDIS_STRING);
+  if (o->refcount != 1 || o->encoding != REDIS_ENCODING_RAW) {
+    robj *decoded = getDecodedObject(o);
+    o = createRawStringObject(decoded->ptr, sdslen(decoded->ptr));
+    decrRefCount(decoded);
+    dbOverwrite(db, key, o);
+  }
+  return o;
+}
 
+long long emptyDb(void(callback)(void *)) {
+  int j;
+  long long removed = 0;
+
+  // 清空所有数据库
+  for (j = 0; j < server.dbnum; j++) {
+
+    // 记录被删除键的数量
+    removed += dictSize(server.db[j].dict);
+
+    // 删除所有键值对
+    dictEmpty(server.db[j].dict, callback);
+    // 删除所有键的过期时间
+    dictEmpty(server.db[j].expires, callback);
+  }
+
+  // TODO 如果开启了集群模式，那么还要移除槽记录
+  //if (server.cluster_enabled)
+  //  slotToKeyFlush();
+
+  // 返回键的数量
+  return removed;
 }
 
 int selectDb(redisClient *c, int id) {

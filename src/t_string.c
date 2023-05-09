@@ -1,7 +1,17 @@
 #include "color.h"
 #include "redis.h"
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
+
+static int checkStringLength(redisClient *c, long long size) {
+  if (size > 512 * 1024 * 1024) {
+    addReplyError(c, "String exceeds max allowed size (512 MB)");
+    return REDIS_ERR;
+  }
+
+  return REDIS_OK;
+}
 
 /* The setGenericCommand() function implements the SET operation with different
  * options and variants. This function is called in order to implement the
@@ -159,6 +169,37 @@ int getGenericCommand(redisClient *c) {
 
 void getCommand(redisClient * c) {
   getGenericCommand(c);
+}
+
+void appendCommand(redisClient *c) {
+  size_t totlen;
+  robj *o, *append;
+
+  o = lookupKeyWrite(c->db, c->argv[1]);
+  if (o == NULL) { // 不存在
+    c->argv[2] = tryObjectEncoding(c->argv[2]);
+    dbAdd(c->db, c->argv[1], c->argv[2]);
+    incrRefCount(c->argv[2]);
+    totlen = stringObjectLen(c->argv[2]);
+  } else {
+    // 存在
+    if (checkType(c, o, REDIS_STRING)) { // 不是String
+      return;
+    }
+    c->argv[2] = tryObjectEncoding(c->argv[2]);
+    totlen = stringObjectLen(o) + sdslen(append->ptr);
+    if (checkStringLength(c, totlen) != REDIS_OK) { // 超出长度限制
+      return;
+    }
+    // 执行追加
+    o = dbUnshareStringValue(c->db, c->argv[1], o);
+    o->ptr = sdscatlen(o->ptr, append->ptr, sdslen(append->ptr));
+    totlen = sdslen(o->ptr);
+  }
+
+  server.dirty++;
+
+  addReplyLongLong(c, totlen);
 }
 
 void strlenCommand(redisClient *c) {
