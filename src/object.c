@@ -1,6 +1,8 @@
+#include "adlist.h"
 #include "redis.h"
 #include "util.h"
 #include "sds.h"
+#include "ziplist.h"
 #include "zmalloc.h"
 
 #include <limits.h>
@@ -132,11 +134,24 @@ robj *tryObjectEncoding(robj *o) {
     return o;
 
   if (o->refcount > 1)
-    return 0;
+    return o;
 
   len = sdslen(s);
   if (len <= 21 && string2l(s,len,&value)) {
-    // TODO 处理 long 类型
+    // 处理 long 类型
+    if (server.maxmemory == 0 &&
+      value >= 0 && value < REDIS_SHARED_INTEGERS) {
+      decrRefCount(o);
+      incrRefCount(shared.integers[value]);
+      return shared.integers[value];
+    } else {
+      if (o->encoding == REDIS_ENCODING_RAW) {
+        sdsfree(o->ptr);
+      }
+      o->encoding = REDIS_ENCODING_INT;
+      o->ptr = (void *)value;
+      return o;
+    }
   }
 
   if (len <= REDIS_ENCODING_EMBSTR_SIZE_LIMIT) {
@@ -211,10 +226,22 @@ robj *createStringObjectFromLongDouble(long double value) {
 }
 
 robj *createListObject(void) {
+  list *l = listCreate();
+  robj *o = createObject(REDIS_LIST, l);
+  listSetFreeMethod(l, decrRefCountVoid);
+  o->encoding = REDIS_ENCODING_LINKEDLIST;
 
+  return o;
 }
 
-robj *createZiplistObject(void);
+robj *createZiplistObject(void) {
+  list *l = ziplistNew();
+  robj *o = createObject(REDIS_LIST, l);
+  o->encoding = REDIS_ENCODING_ZIPLIST;
+
+  return o;
+}
+
 robj *createSetObject(void);
 robj *createIntsetObject(void);
 robj *createHashObject(void);

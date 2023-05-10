@@ -782,6 +782,16 @@ void initServerConfig() {
   server.activerehashing = REDIS_DEFAULT_ACTIVE_REHASHING;
   server.maxclients = REDIS_MAX_CLIENTS;
 
+  server.hash_max_ziplist_entries = REDIS_HASH_MAX_ZIPLIST_ENTRIES;
+  server.hash_max_ziplist_value = REDIS_HASH_MAX_ZIPLIST_VALUE;
+  server.list_max_ziplist_entries = REDIS_LIST_MAX_ZIPLIST_ENTRIES;
+  server.list_max_ziplist_value = REDIS_LIST_MAX_ZIPLIST_VALUE;
+  server.set_max_intset_entries = REDIS_SET_MAX_INTSET_ENTRIES;
+  server.zset_max_ziplist_entries = REDIS_ZSET_MAX_ZIPLIST_ENTRIES;
+  server.zset_max_ziplist_value = REDIS_ZSET_MAX_ZIPLIST_VALUE;
+  server.hll_sparse_max_bytes = REDIS_DEFAULT_HLL_SPARSE_MAX_BYTES;
+  server.shutdown_asap = 0;
+
   server.commands = dictCreate(&commandTableDictType, NULL);
   server.orig_commands = dictCreate(&commandTableDictType, NULL);
   populateCommandTable();

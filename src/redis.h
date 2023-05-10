@@ -190,6 +190,18 @@
 #define ZSKIPLIST_MAXLEVEL 32
 #define ZSKIPLIST_P 0.25
 
+// Zip Structrue
+#define REDIS_HASH_MAX_ZIPLIST_ENTRIES 512
+#define REDIS_HASH_MAX_ZIPLIST_VALUE 64
+#define REDIS_LIST_MAX_ZIPLIST_ENTRIES 512
+#define REDIS_LIST_MAX_ZIPLIST_VALUE 3
+#define REDIS_SET_MAX_INTSET_ENTRIES 512
+#define REDIS_ZSET_MAX_ZIPLIST_ENTRIES 128
+#define REDIS_ZSET_MAX_ZIPLIST_VALUE 64
+
+/* HyperLogLog defines */
+#define REDIS_DEFAULT_HLL_SPARSE_MAX_BYTES 3000
+
 #define UNIT_SECONDS 0
 #define UNIT_MILLISECONDS 1
 
@@ -651,6 +663,14 @@ struct redisServer
   int maxmemory_samples; /* Pricision of random sampling */
 
   // Zip structure config serr redis.conf for more information
+  size_t hash_max_ziplist_entries;
+  size_t hash_max_ziplist_value;
+  size_t list_max_ziplist_entries;
+  size_t list_max_ziplist_value;
+  size_t set_max_intset_entries;
+  size_t zset_max_ziplist_entries;
+  size_t zset_max_ziplist_value;
+  size_t hll_sparse_max_bytes;
   time_t unixtime;
   long long mstime;
 
@@ -785,6 +805,70 @@ void closeListeningSockets(int unlink_unix_socket);
 void updateCachedTime(void);
 void resetServerStats(void);
 unsigned int getLRUClock(void);
+
+// 列表迭代器对象
+typedef struct {
+  robj *subject; // 列表对象
+  unsigned char encoding; // 对象使用的编码
+  // 迭代的方向
+  unsigned char direction;
+  unsigned char *zi; // ziplist 索引 迭代ziplist的list使用
+  // 链表节点的指针 迭代Linkedlist编码的list使用
+  listNode *ln;
+} listTypeIterator;
+
+
+// 迭代列表时使用的记录结构
+typedef struct {
+  // 列表迭代器
+  listTypeIterator *li;
+
+  unsigned char *zi; // ziplist 索引 迭代ziplist的list使用
+  listNode *ln;      // 链表节点的指针 迭代Linkedlist编码的list使用
+} listTypeEntry;
+
+// 抽象set迭代器
+typedef struct {
+  robj *subject;
+
+  int encoding; // 对象编码
+  int ii; // intset 的索引
+  // 字典迭代器 编码为 HT 时使用
+  dictIterator *di;
+} setTypeIterator;
+
+// hash 迭代器
+typedef struct {
+  robj *subject;
+
+  int encoding;
+
+  unsigned char *fptr, *vptr; // 在迭代 ZIPLIST 编码的hash对象时使用
+
+  dictIterator *di;
+  dictEntry *de;
+} hashTypeIterator;
+
+#define REDIS_HASH_KEY 1
+#define REDIS_HASH_VALUE 2
+
+/* List data type  */
+void listTypeTryConversion(robj *subject, robj *value);
+void listTypePush(robj *subject, robj *value, int where);
+robj *listTypePop(robj *subject, int where);
+unsigned long listTypeLength(robj *subject);
+listTypeIterator *listTypeInitIterator(robj *subject, long index,
+                                       unsigned char direction);
+void listTypeReleaseIterator(listTypeIterator *li);
+int listTypeNext(listTypeIterator *li, listTypeEntry *entry);
+robj *listTypeGet(listTypeEntry *entry);
+void listTypeInsert(listTypeEntry *entry, robj *value, int where);
+int listTypeEqual(listTypeEntry *entry, robj *o);
+void listTypeDelete(listTypeEntry *entry);
+void listTypeConvert(robj *subject, int enc);
+void unblockClientWaitingData(redisClient *c);
+void handleClientsBlockedOnLists(void);
+void popGenericCommand(redisClient *c, int where);
 
 // Redis Object implementation
 void decrRefCount(robj *obj);
