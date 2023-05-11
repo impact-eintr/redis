@@ -57,6 +57,41 @@ void litTyeReleaseIterator(listTypeIterator *li) {
   zfree(li);
 }
 
+int listTypeNext(listTypeIterator *li, listTypeEntry *entry) {
+  redisAssert(li->subject->encoding == li->encoding);
+
+  entry->li = li;
+  // 迭代 ZIPLIST
+  if (li->encoding == REDIS_ENCODING_ZIPLIST) {
+    entry->zi = li->zi;
+
+    if (entry->zi != NULL) {
+      if (li->direction == REDIS_TAIL) {
+        li->zi = ziplistNext(li->subject->ptr, li->zi);
+      } else {
+        li->zi = ziplistPrev(li->subject->ptr, li->zi);
+      }
+      return 1;
+    }
+    // 迭代双端链表
+  } else if (li->encoding == REDIS_ENCODING_LINKEDLIST) {
+    entry->ln = li->ln;
+
+    if (entry->ln != NULL) {
+      if (li->direction == REDIS_TAIL) {
+        li->ln = li->ln->next;
+      } else {
+        li->ln = li->ln->prev;
+      }
+      return 1;
+    }
+  } else {
+    redisPanic("Unknown los encoding");
+  }
+
+  return 0;
+}
+
 // 将列表的底层编码从 ziplist 转换成双端链表
 void listTypeConvert(robj *subject, int enc) {
   listTypeIterator *li;
