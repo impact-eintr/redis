@@ -1092,6 +1092,7 @@ robj *createZsetObject(void);
 robj *createZsetZiplistObject(void);
 int getLongFromObjectOrReply(redisClient *c, robj *o, long *target,
                              const char *msg);
+// 1 没有通过检查 0 通过检查
 int checkType(redisClient *c, robj *o, int type);
 int getLongLongFromObjectOrReply(redisClient *c, robj *o, long long *target,
                                  const char *msg);

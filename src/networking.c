@@ -732,9 +732,13 @@ void addReplyBulkLen(redisClient *c, robj *obj) {
   }
 }
 
+// 返回一个 Redis 对象作为回复
 void addReplyBulk(redisClient *c, robj *obj) {
+  printf("1\n");
   addReplyBulkLen(c, obj);
+  printf("2\n");
   addReply(c, obj);
+  printf("3\n");
   addReply(c, shared.crlf);
 }
 

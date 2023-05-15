@@ -235,7 +235,7 @@ robj *createListObject(void) {
 }
 
 robj *createZiplistObject(void) {
-  list *l = ziplistNew();
+  list *l = (list *)ziplistNew();
   robj *o = createObject(REDIS_LIST, l);
   o->encoding = REDIS_ENCODING_ZIPLIST;
 

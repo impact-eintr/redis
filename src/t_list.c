@@ -19,7 +19,72 @@ void listTypePush(robj *subject, robj *value, int where) {
   // 尝试转换编码
   listTypeTryConversion(subject, value);
 
+  // 处理跳表
+  if (subject->encoding == REDIS_ENCODING_SKIPLIST &&
+      ziplistLen(subject->ptr) >= server.list_max_ziplist_entries) {
+    listTypeConvert(subject, REDIS_ENCODING_LINKEDLIST);
+  }
 
+  // ZIPLIST
+  if (subject->encoding == REDIS_ENCODING_ZIPLIST) {
+    int pos = (where == REDIS_HEAD) ? ZIPLIST_HEAD : ZIPLIST_TAIL;
+    value = getDecodedObject(value);
+    subject->ptr = ziplistPush(subject->ptr, value->ptr, sdslen(value->ptr), pos);
+    decrRefCount(value);
+  } else if (subject->encoding == REDIS_ENCODING_LINKEDLIST) { // 双端链表
+    if (where == REDIS_HEAD) {
+      printf("LinkedList Head");
+      listAddNodeHead(subject->ptr, value);
+    } else {
+      printf("LinkedList Tail");
+      listAddNodeTail(subject->ptr, value);
+    }
+    incrRefCount(value);
+  } else { // 未知编码
+    redisAssert("Unknown list encoding");
+  }
+}
+
+robj *listTypePop(robj *subject, int where) {
+  robj *value = NULL;
+
+  if (subject->encoding == REDIS_ENCODING_ZIPLIST) {
+    unsigned char *p;
+    unsigned char* vstr;
+    unsigned int vlen;
+    long long vlong;
+
+    int pos = (where == REDIS_HEAD) ? 0 : -1;
+    p = ziplistIndex(subject->ptr, pos);
+    if (ziplistGet(p, &vstr, &vlen, &vlong)) {
+      if (vstr) { // 弹出的元素是 string
+        value = createStringObject((char *)vstr, vlen);
+      } else { // 弹出的元素是数字
+        value = createStringObjectFromLongLong(vlong);
+      }
+      subject->ptr = ziplistDelete(subject->ptr, &p);
+    }
+  } else if (subject->encoding == REDIS_ENCODING_LINKEDLIST) {
+    list *list = subject->ptr;
+    listNode *ln; // 索引
+
+    if (where == REDIS_HEAD) {
+      ln = listFirst(list);
+    } else {
+      ln = listLast(list);
+    }
+    // 删除弹出节点
+    if (ln != NULL){
+      value = listNodeValue(ln);
+      incrRefCount(value);
+      listDelNode(list, ln);
+    }
+
+  } else { // 未知编码
+    redisPanic("Unknown list encoding");
+  }
+
+  return value;
 }
 
 unsigned long listTypeLength(robj *subject) {
@@ -53,7 +118,7 @@ listTypeIterator *listTypeInitIterator(robj *subject, long index, unsigned char 
   return li;
 }
 
-void litTyeReleaseIterator(listTypeIterator *li) {
+void listTypeReleaseIterator(listTypeIterator *li) {
   zfree(li);
 }
 
@@ -90,6 +155,34 @@ int listTypeNext(listTypeIterator *li, listTypeEntry *entry) {
   }
 
   return 0;
+}
+
+// 返回 entry 结构当前所保存的列表节点
+robj *listTypeGet(listTypeEntry *entry) {
+  listTypeIterator *li = entry->li;
+
+  robj *value = NULL;
+
+  if (li->encoding == REDIS_ENCODING_ZIPLIST) {
+    unsigned char *vstr;
+    unsigned int vlen;
+    long long vlong;
+    redisAssert(entry->zi != NULL);
+    if (ziplistGet(entry->zi, &vstr, &vlen, &vlong)) {
+      if (vstr) {
+        value = createStringObject((char *)vstr, vlen);
+      } else {
+        value = createStringObjectFromLongDouble(vlong);
+      }
+    }
+  } else if (li->encoding == REDIS_ENCODING_LINKEDLIST) {
+    redisAssert(entry->ln != NULL);
+    value = listNodeValue(entry->ln);
+    incrRefCount(value);
+  } else {
+    redisPanic("Unknown list encoding");
+  }
+  return value;
 }
 
 // 将列表的底层编码从 ziplist 转换成双端链表
@@ -147,6 +240,7 @@ void pushGenericCommand(redisClient *c, int where) {
     printf("PUSHING......\n");
   }
 
+  // 返回列表长度
   addReplyLongLong(c, waiting + (lobj ? listTypeLength(lobj) : 0));
 
   server.dirty += pushed;
@@ -157,8 +251,7 @@ void lpushCommand(redisClient *c) {
 }
 
 void rpushCommand(redisClient *c) {
-  pushGenericCommand(c, REDIS_HEAD);
-
+  pushGenericCommand(c, REDIS_TAIL);
 }
 
 void pushxGenericCommand(redisClient *c, int where) {
@@ -173,4 +266,36 @@ void lpushxCommand(redisClient *c) {
 void rpushxCommand(redisClient *c) {
   c->argv[2] = tryObjectEncoding(c->argv[2]);
   pushxGenericCommand(c, REDIS_TAIL);
+}
+
+void popGenericCommand(redisClient *c, int where) {
+  robj *o = lookupKeyWriteOrReply(c, c->argv[1], shared.nullbulk);
+
+  if (o == NULL || checkType(c, o, REDIS_LIST)) {
+    return;
+  }
+
+  robj *value = listTypePop(o, where); // 弹出数据
+  if (value == NULL) {
+    addReply(c, shared.nullbulk);
+  } else {
+    // 有数据
+    char *event = (where == REDIS_HEAD) ? "lpop" : "rpop";
+    addReplyBulk(c, value);
+    printf("event %s\n", event);
+    decrRefCount(value);
+    if (listTypeLength(o) == 0) {
+      // TODO 通知事件
+      dbDelete(c->db, c->argv[1]);
+    }
+    server.dirty++;
+  }
+}
+
+void lpopCommand(redisClient *c) {
+  popGenericCommand(c, REDIS_HEAD);
+}
+
+void rpopCommand(redisClient *c) {
+  popGenericCommand(c, REDIS_TAIL);
 }
