@@ -236,8 +236,8 @@ struct redisCommand redisCommandTable[] = {
     //    {"scan", scanCommand, -2, "rR", 0, NULL, 0, 0, 0, 0, 0},
     //    {"dbsize", dbsizeCommand, 1, "r", 0, NULL, 0, 0, 0, 0, 0},
     //    {"auth", authCommand, 2, "rslt", 0, NULL, 0, 0, 0, 0, 0},
-    //    {"save", saveCommand, 1, "ars", 0, NULL, 0, 0, 0, 0, 0},
-    //    {"bgsave", bgsaveCommand, 1, "ar", 0, NULL, 0, 0, 0, 0, 0},
+    {"save", saveCommand, 1, "ars", 0, NULL, 0, 0, 0, 0, 0},
+    {"bgsave", bgsaveCommand, 1, "ar", 0, NULL, 0, 0, 0, 0, 0},
     //    {"bgrewriteaof", bgrewriteaofCommand, 1, "ar", 0, NULL, 0, 0, 0, 0,
     //    0},
     //    {"shutdown", shutdownCommand, -1, "arlt", 0, NULL, 0, 0, 0, 0, 0},
@@ -773,6 +773,9 @@ void initServerConfig() {
   server.port = REDIS_SERVERPORT;
   server.tcp_backlog = REDIS_TCP_BACKLOG;
   server.bindaddr_count = 0;
+
+  server.rdb_filename = zstrdup(REDIS_DEFAULT_RDB_FILENAME);
+  server.aof_filename = zstrdup(REDIS_DEFAULT_AOF_FILENAME);
 
   server.ipfd_count = 0;
   server.dbnum = REDIS_DEFAULT_DBNUM;

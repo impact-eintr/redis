@@ -53,3 +53,4 @@ dkms.conf
 
 .vscode/
 ./src/a.out
+./src/dump.rdb

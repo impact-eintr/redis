@@ -79,7 +79,6 @@ robj *listTypePop(robj *subject, int where) {
       incrRefCount(value);
       listDelNode(list, ln);
     }
-
   } else { // 未知编码
     redisPanic("Unknown list encoding");
   }
