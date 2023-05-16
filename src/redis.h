@@ -143,7 +143,11 @@
 #define REDIS_ENCODING_SKIPLIST 7   /* Encoded as skiplist */
 #define REDIS_ENCODING_EMBSTR 8     /* Embedded sds string encoding */
 
-
+#define REDIS_RDB_6BITLEN  0
+#define REDIS_RDB_14BITLEN 1
+#define REDIS_RDB_32BITLEN 2
+#define REDIS_RDB_ENCVAL   3
+#define REDIS_RDB_LENERR   UINT_MAX
 
 /* Client flags */
 #define REDIS_SLAVE (1<<0)   /* This client is a slave server */

@@ -50,7 +50,7 @@ struct _rio {
 
 typedef struct _rio rio;
 
-static inline size_t riowrite(rio *r, const void *buf, size_t len) {
+static inline size_t rioWrite(rio *r, const void *buf, size_t len) {
   while (len) {
     size_t bytes_to_write =
         (r->max_processing_chunk && r->max_processing_chunk < len)
