@@ -1,6 +1,7 @@
 #include "redis.h"
 #include "version.h"
 #include "adlist.h"
+#include "rdb.h"
 #include "ae.h"
 #include "anet.h"
 #include "color.h"
@@ -8,6 +9,8 @@
 #include "util.h"
 #include "zmalloc.h"
 
+#include <asm-generic/errno-base.h>
+#include <errno.h>
 #include <string.h>
 #include <stdio.h>
 #include <sys/syslog.h>
@@ -1233,12 +1236,36 @@ void redisAsciiArt(void) {
   zfree(buf);
 }
 
+// TODO 信号处理函数
+
+void loadDataFromDisk(void) {
+   long long start = ustime();
+
+   // TODO 先尝试载入 AOF
+   if (0) {
+
+   } else {
+     if (rdbLoad(server.rdb_filename) == REDIS_OK) {
+       redisLog(REDIS_NOTICE, "DB loaded from disk: %.3f s", (float)(ustime()-start)/1000000);
+     } else if (errno != ENOENT) {
+       redisLog(REDIS_WARNING, "Fatal error loading the DB: %s.Exiting.", strerror(errno));
+       exit(1);
+     }
+   }
+}
+
 int main(int argc, char **argv) {
     // 初始化服务器
     initServerConfig();
     initServer();
 
     redisAsciiArt();
+
+    if (!server.sentinel_mode) {
+      loadDataFromDisk();
+    } else {
+      printf("哨兵模式\n");
+    }
 
     // 运行事件处理器，一直到服务器关闭为止
     aeSetBeforeSleepProc(server.el, beforeSleep);

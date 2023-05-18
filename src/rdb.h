@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define REDIS_RDB_VERSION 6 // RDB 文件版本
+
 /* Dup object types to RDB object types. Only reason is readability (are we
  * dealing with RDB types or with in-memory object types?).
  *

@@ -149,6 +149,11 @@
 #define REDIS_RDB_ENCVAL   3
 #define REDIS_RDB_LENERR   UINT_MAX
 
+#define REDIS_RDB_ENC_INT8  0
+#define REDIS_RDB_ENC_INT16 1
+#define REDIS_RDB_ENC_INT32 2
+#define REDIS_RDB_ENC_LZF   3
+
 /* Client flags */
 #define REDIS_SLAVE (1<<0)   /* This client is a slave server */
 #define REDIS_MASTER (1<<1)  /* This client is a master server */
@@ -287,7 +292,12 @@ typedef struct zset {
   zskiplist *zsl;
 } zset;
 
-
+#define initStaticStringObject(_var, _ptr) do { \
+    _var.refcount =1;                           \
+    _var.type = REDIS_STRING;                   \
+    _var.encoding = REDIS_ENCODING_RAW;         \
+    _var.ptr = _ptr;                            \
+  } while(0);
 
 #define REDIS_EVICTION_POOL_SIZE 16
 struct evictionPoolEntry {
@@ -510,6 +520,16 @@ struct redisServer
 
   // MIGRATE 缓存
   dict *migrate_cached_sockets; /* MIGRATE cached sockets */
+
+
+  /* RDB / AOF loading information*/
+  int loading;
+  off_t loading_total_bytes; // 载入中的全部数据大小
+  off_t loading_loaded_bytes; // 载入成功的数据大小
+  // 开始进行载入的时间
+  time_t loading_start_time;
+  off_t loading_process_events_interval_bytes;
+
 
   /* Fields used only for stats */
 

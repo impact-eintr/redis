@@ -1,8 +1,13 @@
 #include "rdb.h"
+#include "endianconv.h"
 #include "rio.h"
 #include "redis.h"
 #include "dict.h"
+#include "sds.h"
+#include "zmalloc.h"
 #include <errno.h>
+#include <stdint.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -70,47 +75,313 @@ int rdbSaveLen(rio *rdb, uint32_t len) {
   return nwritten;
 }
 
-uint32_t rdbLoadLen(rio *rdb, int *isencoded) {
+int rdbEncodeInteger(long long value, unsigned char *enc) {
+  if (value >= -(1<<7) && value <= (1<<7)-1) {
+    enc[0] = (REDIS_RDB_ENCVAL<<6)|REDIS_RDB_ENC_INT8;
+    enc[1] = value&0xFF;
+    return 2;
+  } else if (value >= -(1<<15) && value <= (1<<15)-1) {
+    enc[0] = (REDIS_RDB_ENCVAL<<6)|REDIS_RDB_ENC_INT16;
+    enc[1] = value&0xFF;
+    enc[2] = (value>>8)&0xFF;
+    return 3;
+  } else if (value >= -(long long)(1<<31) && value <= (long long)(1<<31)-1) {
+    enc[0] = (REDIS_RDB_ENCVAL<<6)|REDIS_RDB_ENC_INT32;
+    enc[1] = value&0xFF;
+    enc[2] = (value>>8)&0xFF;
+    enc[3] = (value>>16)&0xFF;
+    enc[4] = (value>>24)&0xFF;
 
+    return 5;
+  } else {
+    return 0;
+  }
+}
+
+// 载入整数编码对象
+robj *rdbLoadIntegerObject(rio *rdb, int enctype, int encode) {
+  unsigned char enc[4];
+  long long val;
+
+  // 整数编码
+  if (enctype == REDIS_RDB_ENC_INT8) {
+    if (rioRead(rdb, enc, 1) == 0) {
+      return NULL;
+    }
+    val = (signed char)enc[0];
+  } else if (enctype == REDIS_RDB_ENC_INT16) {
+    uint16_t v;
+    if (rioRead(rdb, enc, 2) == 0) {
+      return NULL;
+    }
+    v = enc[0]|(enc[1]<<8);
+    val = (int16_t)v;
+  } else if (enctype == REDIS_RDB_ENC_INT32) {
+    uint32_t v;
+    if (rioRead(rdb, enc, 4) == 0)
+      return NULL;
+    v = enc[0]|(enc[1]<<8)|(enc[2]<<16)|(enc[3]<<24);
+    val = (int32_t)v;
+  } else {
+    val = 0;
+    redisPanic("Unknown RDB integer encoding type");
+  }
+
+  if (encode) {
+    return createStringObjectFromLongLong(val);
+  } else {
+    return createObject(REDIS_STRING, sdsfromlonglong(val));
+  }
+}
+
+uint32_t rdbLoadLen(rio *rdb, int *isencoded) {
+  unsigned char buf[2];
+  uint32_t len;
+  int type;
+
+  if (isencoded) *isencoded = 0;
+
+  if (rioRead(rdb, buf, 1) == 0)
+    return REDIS_RDB_LENERR;
+
+  type = (buf[0]&0xC0)>>6;
+  if (rioRead()) {
+
+  if (rioRead()) {
+
+  } else if (type == REDIS_RDB_14BITLEN) {
+
+  }
 }
 
 int rdbSaveObjectType(rio *rdb, robj *o) {
+  switch (o->type) {
+  case REDIS_STRING:
+    return rdbSaveType(rdb, REDIS_RDB_TYPE_STRING);
+  case REDIS_LIST:
+    if (o->encoding == REDIS_ENCODING_ZIPLIST)
+      return rdbSaveType(rdb, REDIS_RDB_TYPE_LIST_ZIPLIST);
+    else if (o->encoding == REDIS_ENCODING_LINKEDLIST)
+      return rdbSaveType(rdb, REDIS_RDB_TYPE_LIST);
+    else
+      redisPanic("Unknown list encoding");
 
+  case REDIS_SET:
+    if (o->encoding == REDIS_ENCODING_INTSET)
+      return rdbSaveType(rdb, REDIS_RDB_TYPE_SET_INTSET);
+    else if (o->encoding == REDIS_ENCODING_HT)
+      return rdbSaveType(rdb, REDIS_RDB_TYPE_SET);
+    else
+      redisPanic("Unknown set encoding");
+
+  case REDIS_ZSET:
+    if (o->encoding == REDIS_ENCODING_ZIPLIST)
+      return rdbSaveType(rdb, REDIS_RDB_TYPE_ZSET_ZIPLIST);
+    else if (o->encoding == REDIS_ENCODING_SKIPLIST)
+      return rdbSaveType(rdb, REDIS_RDB_TYPE_ZSET);
+    else
+      redisPanic("Unknown sorted set encoding");
+
+  case REDIS_HASH:
+    if (o->encoding == REDIS_ENCODING_ZIPLIST)
+      return rdbSaveType(rdb, REDIS_RDB_TYPE_HASH_ZIPLIST);
+    else if (o->encoding == REDIS_ENCODING_HT)
+      return rdbSaveType(rdb, REDIS_RDB_TYPE_HASH);
+    else
+      redisPanic("Unknown hash encoding");
+
+  default:
+    redisPanic("Unknown object type");
+  }
+  return -1;
 }
 
 int rdbLoadObjectType(rio *rdb) {
 
 }
 
-int rdbLoad(char *filename) {
+void startLoading(FILE *fp) {
+  struct stat sb;
 
+  server.loading = 1;
+  server.loading_start_time = time(NULL);
+  if (fstat(fileno(fp), &sb) == -1) {
+    server.loading_total_bytes = 1;
+  } else {
+    server.loading_total_bytes = sb.st_size;
+  }
+}
+
+void loadingProgress(off_t pos) {
+  server.loading_loaded_bytes = pos;
+  if (server.stat_peak_memory > zmalloc_used_memory()) {
+    server.stat_peak_memory = zmalloc_used_memory();
+  }
+}
+
+void stopLoading(void) {
+  server.loading = 0;
+}
+
+// 记录载入进度信息，以便让客户端进行查询
+// 这也会在计算 RDB 校验和时用到。
+void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
+  if (server.rdb_checksum)
+    rioGenericUpdateChecksum(r, buf, len);
+  if (server.loading_process_events_interval_bytes &&
+      (r->processed_bytes + len) /
+              server.loading_process_events_interval_bytes >
+          r->processed_bytes / server.loading_process_events_interval_bytes) {
+    /* The DB can take some non trivial amount of time to load. Update
+     * our cached time since it is used to create and update the last
+     * interaction time with clients and for other important things. */
+    updateCachedTime();
+    //if (server.masterhost && server.repl_state == REDIS_REPL_TRANSFER)
+    //  replicationSendNewlineToMaster();
+    loadingProgress(r->processed_bytes);
+    //processEventsWhileBlocked();
+  }
+}
+
+int rdbLoad(char *filename) {
+  uint32_t dbid;
+  int type, rdbver;
+  redisDb *db = server.db+0;
+  char buf[1024];
+  long long expiretime, now = mstime();
+  FILE *fp;
+  rio rdb;
+
+  if ((fp = fopen(filename, "r")) == NULL) {
+    return REDIS_ERR;
+  }
+
+  rioInitWithFile(&rdb, fp);
+  rdb.update_cksum = rdbLoadProgressCallback;
+
+  if (rioRead(&rdb, buf, 9) == 0)
+    goto eoferr;
+
+  // 检查版本号
+  if (memcmp(buf, "REDIS", 5) != 0) {
+    fclose(fp);
+    redisLog(REDIS_WARNING, "Wrong signature trying to load DB from file");
+    errno = EINVAL;
+    return REDIS_ERR;
+  }
+  rdbver = atoi(buf + 5);
+  if (rdbver < 1 || rdbver > REDIS_RDB_VERSION) {
+    fclose(fp);
+    redisLog(REDIS_WARNING, "Can't handle RDB format version %d", rdbver);
+    errno = EINVAL;
+    return REDIS_ERR;
+  }
+
+  startLoading(fp);
+  while (1) {
+    robj *key, *val;
+    expiretime = -1;
+
+    if ((type = rdbLoadType(&rdb)) == -1)
+      goto eoferr;
+
+    if (type == REDIS_RDB_OPCODE_EXPIRETIME) {
+
+    } else if (type == REDIS_RDB_OPCODE_EXPIRETIME_MS) {
+
+    }
+
+    if (type == REDIS_RDB_OPCODE_EOF)
+      break;
+
+    // 读入切换数据库指令
+    if (type == REDIS_RDB_OPCODE_SELECTDB) {
+      if ((dbid = rdbLoadLen(&rdb, NULL)) == REDIS_RDB_LENERR) {
+        goto eoferr;
+      }
+
+      printf("%d\n", dbid);
+       // 检查数据库号码的正确性
+      if (dbid >= (unsigned)server.dbnum) {
+        redisLog(REDIS_WARNING,
+                 "FATAL: Data file was created with a Redis server configured "
+                 "to handle more than %d databases.           Exiting\n",
+                 server.dbnum);
+        exit(1);
+      }
+
+      // 在程序内容切换数据库
+      db = server.db + dbid;
+
+      // 跳过
+      continue;
+    }
+
+    if ((key = rdbLoadStringObject(&rdb)) == NULL)
+      goto eoferr;
+
+    // TODO 处理 MASTER
+
+    dbAdd(db, key, val);
+
+    if (expiretime != -1)
+      setExpire(db, key, expiretime);
+
+    decrRefCount(key);
+  }
+
+  /* Verify the checksum if RDB version is >= 5
+   *
+   * 如果 RDB 版本 >= 5 ，那么比对校验和
+   */
+  if (rdbver >= 5 && server.rdb_checksum) {
+    uint64_t cksum, expected = rdb.cksum;
+
+    // 读入文件的校验和
+    if (rioRead(&rdb, &cksum, 8) == 0)
+      goto eoferr;
+    memrev64ifbe(&cksum);
+
+    // 比对校验和
+    if (cksum == 0) {
+      redisLog(
+          REDIS_WARNING,
+          "RDB file was saved with checksum disabled: no check performed.");
+    } else if (cksum != expected) {
+      redisLog(REDIS_WARNING, "Wrong RDB checksum. Aborting now.");
+      exit(1);
+    }
+  }
+
+  // 关闭 RDB
+  fclose(fp);
+
+  // 服务器从载入状态中退出
+  stopLoading();
+
+  return REDIS_OK;
+
+eoferr: /* unexpected end of file is handled here with a fatal exit */
+  redisLog(REDIS_WARNING,
+           "Short read or OOM loading DB. Unrecoverable error, aborting now.");
+  exit(1);
+  return REDIS_ERR; /* Just to avoid warning */
 }
 
 void rdbRemoveTempFile(pid_t childpid) {
+  char tmpfile[256];
 
+  snprintf(tmpfile, 256, "temp-%d.rdb", (int)childpid);
+  unlink(tmpfile);
 }
 
-int rdbSaveObject(rio *rdb, robj *o) {
 
-}
-
-off_t rdbSavedObjectLen(robj *o) {
-
-}
-
-off_t rdbSavedObjectPages(robj *o) {
-
-}
-
-robj *rdbLoadObject(int type, rio *rdb) {
-
-}
 
 void backgroundSaveDoneHandler(int exitcode, int bysignal) {
 
 }
 
-// [len][data]
+// 对于字符串 使用 [len][data] 保存
 int rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
   int enclen;
   int n, nwritten = 0;
@@ -137,12 +408,29 @@ int rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
   return nwritten;
 }
 
+// 将long long 保存成 String
+int rdbSaveLongLongAsStringObject(rio *rdb, long long value) {
+  unsigned char buf[32];
+  int n, nwritten = 0;
+
+  int enclen = rdbEncodeInteger(value, buf);
+
+  if (enclen > 0) {
+
+  } else { // 编码失败
+
+  }
+
+  return nwritten;
+}
+
 // 保存 String 到 RDB 中
 int rdbSaveStringObject(rio *rdb, robj *obj) {
   if (obj->encoding == REDIS_ENCODING_INT) { //
-
+    return rdbSaveLongLongAsStringObject(rdb, (long)obj->ptr);
   } else { // String
-
+    redisAssertWithInfo(NULL, obj->ptr, sdsEncodedObject(obj));
+    return rdbSaveRawString(rdb, obj->ptr, sdslen(obj->ptr));
   }
 }
 
@@ -150,10 +438,77 @@ robj *rdbLoadStringObject(rio *rdb) {
 
 }
 
+// 保存指定对象
+int rdbSaveObject(rio *rdb, robj *o) {
+  int n, nwritten = 0;
 
+  // 保存String
+  if (o->type == REDIS_STRING) {
+    if ((n = rdbSaveStringObject(rdb, o)) == -1) {
+      return -1;
+    }
+    nwritten+=n;
+    // 保存List
+  } else if (o->type == REDIS_LIST) {
+    if (o->encoding == REDIS_ENCODING_ZIPLIST) {
+
+    } else if (o->encoding == REDIS_ENCODING_LINKEDLIST) {
+
+    } else {
+      redisPanic("Unknown set encoding");
+    }
+    // 保存Set
+  } else if (o->type == REDIS_SET) {
+
+    if (o->encoding == REDIS_ENCODING_HT) {
+
+    } else if (o->encoding == REDIS_ENCODING_INTSET) {
+
+    } else {
+      redisPanic("Unknown set encoding");
+    }
+    // 保存Zset
+  } else if (o->type == REDIS_ZSET) {
+
+    if (o->encoding == REDIS_ENCODING_ZIPLIST) {
+
+    } else if (o->encoding == REDIS_ENCODING_SKIPLIST) {
+
+    } else {
+      redisPanic("Unknown zset encoding");
+    }
+    // 保存Hash
+  } else if (o->type == REDIS_HASH) {
+
+    if (o->encoding == REDIS_ENCODING_ZIPLIST) {
+
+    } else if (o->encoding == REDIS_ENCODING_HT) {
+
+    } else {
+      redisPanic("Unknown hash encoding");
+    }
+  } else {
+    redisPanic("Unknown object type");
+  }
+
+  return nwritten;
+}
+
+off_t rdbSavedObjectLen(robj *o) {
+
+}
+
+off_t rdbSavedObjectPages(robj *o) {
+
+}
+
+robj *rdbLoadObject(int type, rio *rdb) {
+
+}
 
 
 int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime, long long now) {
+  printf("Saving Object: %s\n", (char *)key->ptr);
   if (expiretime != -1) {
     if (expiretime < now) {
       return 0;
@@ -161,7 +516,7 @@ int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime, lo
     // 保存过期信息
     if (rdbSaveType(rdb, REDIS_RDB_OPCODE_EXPIRETIME_MS) == -1)
       return -1;
-    if (rdbSaveMillsecondTime(rdb, expiretime) == -1)
+    if (rdbSaveMillisecondTime(rdb, expiretime) == -1)
       return -1;
   }
 
@@ -182,6 +537,7 @@ int rdbSave(char *filename) {
   dictIterator *di = NULL;
   dictEntry *de;
   char tmpfile[256];
+  char magic[10];
   int j;
   long long now = mstime();
   FILE *fp;
@@ -196,7 +552,6 @@ int rdbSave(char *filename) {
     return REDIS_ERR;
   }
 
-  printf("tmpfile: %s\n", tmpfile);
   // 初始化IO
   rioInitWithFile(&rdb, fp);
 
@@ -206,7 +561,9 @@ int rdbSave(char *filename) {
   }
 
   // 写入 RDB 版本号
-  // TODO
+  snprintf(magic, sizeof(magic), "REDIS%04d", REDIS_RDB_VERSION);
+  if (rdbWriteRaw(&rdb, magic, 9) == -1)
+    goto werr;
 
   // 遍历所有数据库
   for (j = 0;j < server.dbnum;j++) {
@@ -220,18 +577,33 @@ int rdbSave(char *filename) {
       return REDIS_ERR;
     }
 
+    // 写入 DB 选择器
+    if (rdbSaveType(&rdb, REDIS_RDB_OPCODE_SELECTDB) == -1)
+      goto werr;
+    if (rdbSaveLen(&rdb, j) == -1) // 写入数据库号
+      goto werr;
+
     while((de = dictNext(di)) != NULL) {
       sds keystr = dictGetKey(de);
       robj key, *o = dictGetVal(de);
       long long expire;
 
       expire = getExpire(db, &key);
+      initStaticStringObject(key, keystr);
 
-      printf("%s 保存中\n", keystr);
+      if (rdbSaveKeyValuePair(&rdb, &key, o, expire, now) == -1)
+        goto werr;
     }
     dictReleaseIterator(di);
   }
   di = NULL;
+
+  if (rdbSaveType(&rdb, REDIS_RDB_OPCODE_EOF) == -1)
+    goto werr;
+
+  cksum = rdb.cksum;
+  memrev64ifbe(&cksum);
+  rioWrite(&rdb, &cksum, 8);
 
   if (fflush(fp) == EOF)
     goto werr;
