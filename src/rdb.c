@@ -145,12 +145,20 @@ uint32_t rdbLoadLen(rio *rdb, int *isencoded) {
     return REDIS_RDB_LENERR;
 
   type = (buf[0]&0xC0)>>6;
-  if (rioRead()) {
-
-  if (rioRead()) {
-
+  if (type == REDIS_RDB_ENCVAL) { // value
+    if (isencoded)
+      *isencoded = 1;
+    return buf[0]&0x3F; // 获取编码类型
+  } else if (type == REDIS_RDB_6BITLEN) {
+    return buf[0]&0x3F; // 获取6bit的长度
   } else if (type == REDIS_RDB_14BITLEN) {
-
+    if (rioRead(rdb, buf+1, 1) == 0)
+      return REDIS_RDB_LENERR;
+    return ((buf[0]&0x3F)<<8)|buf[1];
+  } else {
+    if (rioRead(rdb, &len, 4) == 0)
+      return REDIS_RDB_LENERR;
+    return ntohl(len);
   }
 }
 
