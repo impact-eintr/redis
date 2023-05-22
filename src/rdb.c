@@ -103,12 +103,14 @@ robj *rdbLoadIntegerObject(rio *rdb, int enctype, int encode) {
   unsigned char enc[4];
   long long val;
 
+  printf("加载String长度\n");
   // 整数编码
   if (enctype == REDIS_RDB_ENC_INT8) {
     if (rioRead(rdb, enc, 1) == 0) {
       return NULL;
     }
     val = (signed char)enc[0];
+    printf("val len: %lld", val);
   } else if (enctype == REDIS_RDB_ENC_INT16) {
     uint16_t v;
     if (rioRead(rdb, enc, 2) == 0) {
@@ -303,12 +305,12 @@ int rdbLoad(char *filename) {
       break;
 
     // 读入切换数据库指令
-    if (type == REDIS_RDB_OPCODE_SELECTDB) {
+    if (type == REDIS_RDB_OPCODE_SELECTDB) { // fe
       if ((dbid = rdbLoadLen(&rdb, NULL)) == REDIS_RDB_LENERR) {
         goto eoferr;
       }
 
-      printf("%d\n", dbid);
+      printf("dbid %d\n", dbid);
        // 检查数据库号码的正确性
       if (dbid >= (unsigned)server.dbnum) {
         redisLog(REDIS_WARNING,
@@ -325,7 +327,12 @@ int rdbLoad(char *filename) {
       continue;
     }
 
+    // 读入键
     if ((key = rdbLoadStringObject(&rdb)) == NULL)
+      goto eoferr;
+
+    // 读入值
+    if ((val = rdbLoadStringObject(&rdb)) == NULL)
       goto eoferr;
 
     // TODO 处理 MASTER
@@ -442,8 +449,52 @@ int rdbSaveStringObject(rio *rdb, robj *obj) {
   }
 }
 
-robj *rdbLoadStringObject(rio *rdb) {
+robj *rdbLoadLzfStringObject(rio *rdb) {
+  exit(1);
+}
 
+robj *rdbGenericLoadStringObject(rio *rdb, int encode) {
+  int isencoded;
+  uint32_t len;
+  sds val;
+
+  // 先加载编码长度
+  len = rdbLoadLen(rdb, &isencoded);
+
+  if (isencoded) {
+    switch (len) {
+      // 整数编码
+      case REDIS_RDB_ENC_INT8:
+      case REDIS_RDB_ENC_INT16:
+      case REDIS_RDB_ENC_INT32:
+        return rdbLoadIntegerObject(rdb, len, encode); // 加载字符串长度
+      // LZF 压缩编码
+      case REDIS_RDB_ENC_LZF:
+        return rdbLoadLzfStringObject(rdb);
+      default:
+        redisPanic("Unknown RDB encoding type");
+    }
+  }
+
+  if (len == REDIS_RDB_LENERR)
+    return NULL;
+
+  val = sdsnewlen(NULL, len);
+  if (len && rioRead(rdb, val, len) == 0) {
+    sdsfree(val);
+    return NULL;
+  }
+
+  printf("%s\n", (char *)val);
+  return createObject(REDIS_STRING, val);
+}
+
+robj *rdbLoadStringObject(rio *rdb) {
+  return rdbGenericLoadStringObject(rdb, 0);
+}
+
+robj *rdbLoadEncodedStringObject(rio *rdb) {
+  return rdbGenericLoadStringObject(rdb, 1);
 }
 
 // 保存指定对象
