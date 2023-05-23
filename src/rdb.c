@@ -1,9 +1,11 @@
 #include "rdb.h"
+#include "adlist.h"
 #include "endianconv.h"
 #include "rio.h"
 #include "redis.h"
 #include "dict.h"
 #include "sds.h"
+#include "ziplist.h"
 #include "zmalloc.h"
 #include <errno.h>
 #include <stdint.h>
@@ -332,7 +334,7 @@ int rdbLoad(char *filename) {
       goto eoferr;
 
     // 读入值
-    if ((val = rdbLoadStringObject(&rdb)) == NULL)
+    if ((val = rdbLoadObject(type, &rdb)) == NULL)
       goto eoferr;
 
     // TODO 处理 MASTER
@@ -485,7 +487,6 @@ robj *rdbGenericLoadStringObject(rio *rdb, int encode) {
     return NULL;
   }
 
-  printf("%s\n", (char *)val);
   return createObject(REDIS_STRING, val);
 }
 
@@ -510,9 +511,32 @@ int rdbSaveObject(rio *rdb, robj *o) {
     // 保存List
   } else if (o->type == REDIS_LIST) {
     if (o->encoding == REDIS_ENCODING_ZIPLIST) {
+      size_t l = ziplistBlobLen((unsigned char *)o->ptr);
+      // 以字符串形式保存整个 ZIPLIST 列表
+      if ((n = rdbSaveRawString(rdb, o->ptr, l)) == -1) {
+        return -1;
+      }
+      nwritten += n;
 
     } else if (o->encoding == REDIS_ENCODING_LINKEDLIST) {
+      list *list = o->ptr;
+      listIter li;
+      listNode *ln;
 
+      if ((n = rdbSaveLen(rdb, listLength(list))) == -1) {
+        return -1;
+      }
+      nwritten += n;
+
+      listRewind(list, &li);
+
+      while ((ln = listNext(&li))) {
+        robj *eleobj = listNodeValue(ln);
+        if ((n = rdbSaveStringObject(rdb, eleobj)) == -1) {
+          return -1;
+        }
+        nwritten += n;
+      }
     } else {
       redisPanic("Unknown set encoding");
     }
@@ -520,7 +544,6 @@ int rdbSaveObject(rio *rdb, robj *o) {
   } else if (o->type == REDIS_SET) {
 
     if (o->encoding == REDIS_ENCODING_HT) {
-
     } else if (o->encoding == REDIS_ENCODING_INTSET) {
 
     } else {
@@ -561,10 +584,81 @@ off_t rdbSavedObjectPages(robj *o) {
 
 }
 
-robj *rdbLoadObject(int type, rio *rdb) {
+robj *rdbLoadObject(int rdbtype, rio *rdb) {
+  robj *o, *ele, *dec;
+  size_t len;
+  unsigned int i;
 
+    printf("type %d\n", rdbtype);
+  // 载入各种对象
+  if (rdbtype == REDIS_RDB_TYPE_STRING) {
+    if ((o = rdbLoadEncodedStringObject(rdb)) == NULL) {
+      return NULL;
+    }
+    o = tryObjectEncoding(o);
+  } else if (rdbtype == REDIS_RDB_TYPE_LIST) {
+    if ((len = rdbLoadLen(rdb, NULL)) == REDIS_RDB_LENERR) {
+      return NULL;
+    }
+    if (len > server.list_max_ziplist_entries) {
+      o = createListObject();
+    } else {
+      o = createZiplistObject();
+    }
+
+    while (len--) {
+      if ((ele = rdbLoadEncodedStringObject(rdb)) == NULL) {
+        return NULL;
+      }
+
+      // 根据载入的元素长度判断是否继续要使用ziplist保存
+      if (o->encoding == REDIS_ENCODING_ZIPLIST && sdsEncodedObject(ele) &&
+          sdslen(ele->ptr) > server.list_max_ziplist_value) {
+      }
+
+      if (o->encoding == REDIS_ENCODING_ZIPLIST) {
+        dec = getDecodedObject(ele);
+        o->ptr = ziplistPush(o->ptr, dec->ptr, sdslen(dec->ptr), REDIS_TAIL);
+
+        decrRefCount(dec);
+        decrRefCount(ele);
+      } else {
+        ele = tryObjectEncoding(ele);
+        listAddNodeTail(o->ptr, ele);
+      }
+      printf("元素 %s\n", (char *)ele->ptr);
+    }
+  } else if (rdbtype == REDIS_RDB_TYPE_SET) {
+
+  } else if (rdbtype == REDIS_RDB_TYPE_ZSET) {
+
+  } else if (rdbtype == REDIS_RDB_TYPE_HASH) {
+
+  } else if (rdbtype == REDIS_RDB_TYPE_HASH_ZIPMAP  ||
+               rdbtype == REDIS_RDB_TYPE_LIST_ZIPLIST ||
+               rdbtype == REDIS_RDB_TYPE_SET_INTSET   ||
+               rdbtype == REDIS_RDB_TYPE_ZSET_ZIPLIST ||
+             rdbtype == REDIS_RDB_TYPE_HASH_ZIPLIST) {
+    robj *aux = rdbLoadStringObject(rdb);
+
+    if (aux == NULL) {
+      return NULL;
+    }
+
+    o = createObject(REDIS_STRING, NULL); // string 仅仅是一个占位符
+    o->ptr = zmalloc(sdslen(aux->ptr));
+    memcpy(o->ptr, aux->ptr, sdslen(aux->ptr));
+    decrRefCount(aux);
+
+    switch (rdbtype) {
+
+    }
+  } else {
+    redisPanic("Unknown object type");
+  }
+
+  return o;
 }
-
 
 int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime, long long now) {
   printf("Saving Object: %s\n", (char *)key->ptr);

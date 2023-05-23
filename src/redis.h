@@ -1107,8 +1107,8 @@ robj *getDecodedObject(robj *o);
 size_t stringObjectLen(robj *o);
 robj *createStringObjectFromLongLong(long long value);
 robj *createStringObjectFromLongDouble(long double value);
-robj *createListObject(void);
-robj *createZiplistObject(void);
+robj *createListObject(void); // 创建一个linkedlist
+robj *createZiplistObject(void); //创建一个ziplist
 robj *createSetObject(void);
 robj *createIntsetObject(void);
 robj *createHashObject(void);

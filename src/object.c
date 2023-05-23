@@ -242,11 +242,48 @@ robj *createZiplistObject(void) {
   return o;
 }
 
-robj *createSetObject(void);
-robj *createIntsetObject(void);
-robj *createHashObject(void);
-robj *createZsetObject(void);
-robj *createZsetZiplistObject(void);
+robj *createSetObject(void) {
+}
+
+robj *createIntsetObject(void) {
+
+}
+
+robj *createHashObject(void) {
+  unsigned char *zl =ziplistNew(); // 默认采用ziplist作为实现
+
+  robj *o = createObject(REDIS_HASH, zl);
+
+  o->encoding = REDIS_ENCODING_ZIPLIST;
+
+  return o;
+}
+
+// 采用 skiplist 作为实现
+robj *createZsetObject(void) {
+  zset *zs = zmalloc(sizeof(*zs));
+
+  robj *o;
+
+  zs->dict = dictCreate(&zsetDictType, NULL);
+  zs->zsl = zslCreate();
+
+  o = createObject(REDIS_ZSET, zs);
+  o->encoding = REDIS_ENCODING_SKIPLIST;
+
+  return o;
+}
+
+// 采用 ziplist 作为实现
+robj *createZsetZiplistObject(void) {
+  unsigned char *zl = ziplistNew();
+
+  robj *o = createObject(REDIS_ZSET, zl);
+  o->encoding = REDIS_ENCODING_ZIPLIST;
+
+  return o;
+}
+
 
 
 int getLongFromObjectOrReply(redisClient *c, robj *o, long *target,
