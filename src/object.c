@@ -243,10 +243,17 @@ robj *createZiplistObject(void) {
 }
 
 robj *createSetObject(void) {
+  dict *d = dictCreate(&setDictType, NULL);
+
+  robj *o = createObject(REDIS_SET, d);
+  o->encoding = REDIS_ENCODING_HT;
+
+  return o;
 }
 
-robj *createIntsetObject(void) {
 
+robj *createIntsetObject(void) {
+  return NULL;
 }
 
 robj *createHashObject(void) {

@@ -894,6 +894,42 @@ void unblockClientWaitingData(redisClient *c);
 void handleClientsBlockedOnLists(void);
 void popGenericCommand(redisClient *c, int where);
 
+
+/* Set data type */
+robj *setTypeCreate(robj *value);
+int setTypeAdd(robj *subject, robj *value);
+int setTypeRemove(robj *subject, robj *value);
+int setTypeIsMember(robj *subject, robj *value);
+setTypeIterator *setTypeInitIterator(robj *subject);
+void setTypeReleaseIterator(setTypeIterator *si);
+int setTypeNext(setTypeIterator *si, robj **objele, int64_t *llele);
+robj *setTypeNextObject(setTypeIterator *si);
+int setTypeRandomElement(robj *setobj, robj **objele, int64_t *llele);
+unsigned long setTypeSize(robj *subject);
+void setTypeConvert(robj *subject, int enc);
+
+/* Hash data type */
+void hashTypeConvert(robj *o, int enc);
+void hashTypeTryConversion(robj *subject, robj **argv, int start, int end);
+void hashTypeTryObjectEncoding(robj *subject, robj **o1, robj **o2);
+robj *hashTypeGetObject(robj *o, robj *key);
+int hashTypeExists(robj *o, robj *key);
+int hashTypeSet(robj *o, robj *key, robj *value);
+int hashTypeDelete(robj *o, robj *key);
+unsigned long hashTypeLength(robj *o);
+hashTypeIterator *hashTypeInitIterator(robj *subject);
+void hashTypeReleaseIterator(hashTypeIterator *hi);
+int hashTypeNext(hashTypeIterator *hi);
+void hashTypeCurrentFromZiplist(hashTypeIterator *hi, int what,
+                                unsigned char **vstr,
+                                unsigned int *vlen,
+                                long long *vll);
+void hashTypeCurrentFromHashTable(hashTypeIterator *hi, int what, robj **dst);
+robj *hashTypeCurrentObject(hashTypeIterator *hi, int what);
+robj *hashTypeLookupWriteOrCreate(redisClient *c, robj *key);
+
+
+
 // Redis Object implementation
 void decrRefCount(robj *obj);
 void decrRefCountVoid(void *o);
