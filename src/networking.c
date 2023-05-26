@@ -403,7 +403,6 @@ static void acceptCommonHandler(int fd, int flags) {
 
   // 设置Flag
   c->flags |= flags;
-  printf(YELLOWSTR("一个TCP连接到来\n"));
 }
 
 // 事件处理器 连接应答处理器

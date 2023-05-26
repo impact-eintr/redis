@@ -361,12 +361,20 @@ long long ustime(void) {
   return ust;
 }
 
+
+
+int dictEncObjKeyCompare(void *privdata, const void *key1, const void*key2) {
+
+}
+
+unsigned int dictEncObjHash(const void *key) {
+
+}
+
 /* Return the UNIX time in milliseconds */
 // 返回毫秒格式的 UNIX 时间
 // 1 秒 = 1 000 毫秒
 long long mstime(void) { return ustime() / 1000; }
-
-
 
 /*          SDS DICT            */
 unsigned int dictSdsHash(const void *key) {
@@ -452,6 +460,26 @@ int htNeedsResize(dict *dict) {
   return (size && used && size > DICT_HT_INITIAL_SIZE &&
           (used * 100 / size < REDIS_HT_MINFILL));
 }
+
+/* Sets type hash table */
+dictType setDictType = {
+  dictEncObjHash,            /* hash function */
+  NULL,                      /* key dup */
+  NULL,                      /* val dup */
+  dictEncObjKeyCompare,      /* key compare */
+  dictRedisObjectDestructor, /* key destructor */
+  NULL                       /* val destructor */
+};
+
+/* Sorted sets hash (note: a skiplist is used in addition to the hash table) */
+dictType zsetDictType = {
+  dictEncObjHash,            /* hash function */
+  NULL,                      /* key dup */
+  NULL,                      /* val dup */
+  dictEncObjKeyCompare,      /* key compare */
+  dictRedisObjectDestructor, /* key destructor */
+  NULL                       /* val destructor */
+};
 
 // 尝试缩小字典体积来节约内存
 void tryResizeHashTables(int dbid) {
@@ -1177,13 +1205,6 @@ void populateCommandTable(void) {
     redisAssert(retval1 == DICT_OK && retval2 == DICT_OK);
   }
 }
-
-
-
-
-
-
-
 
 #if 1
 
