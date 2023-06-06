@@ -733,18 +733,33 @@ void addReplyBulkLen(redisClient *c, robj *obj) {
 
 // 返回一个 Redis 对象作为回复
 void addReplyBulk(redisClient *c, robj *obj) {
-  printf("1\n");
   addReplyBulkLen(c, obj);
-  printf("2\n");
   addReply(c, obj);
-  printf("3\n");
   addReply(c, shared.crlf);
 }
 
 
-void addReplyBulkCString(redisClient *c, char *s);
-void addReplyBulkCBuffer(redisClient *c, void *p, size_t len);
-void addReplyBulkLongLong(redisClient *c, long long ll);
+void addReplyBulkCString(redisClient *c, char *s) {
+  if (s == NULL) {
+    addReply(c, shared.nullbulk);
+  } else {
+    addReplyBulkCBuffer(c, s, strlen(s));
+  }
+}
+
+void addReplyBulkCBuffer(redisClient *c, void *p, size_t len) {
+  addReplyLongLongWithPrefix(c, len, '$');
+  addReplyString(c, p, len);
+  addReply(c, shared.crlf);
+}
+
+void addReplyBulkLongLong(redisClient *c, long long ll) {
+  char buf[64];
+  int len;
+
+  len = ll2string(buf, 64, ll);
+  addReplyBulkCBuffer(c, buf, len);
+}
 
 /*
  * 返回一个状态回复

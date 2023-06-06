@@ -330,13 +330,15 @@ int rdbLoad(char *filename) {
     }
 
     // 读入键
-    if ((key = rdbLoadStringObject(&rdb)) == NULL)
+    if ((key = rdbLoadStringObject(&rdb)) == NULL) {
+      printf("加载失败\n");
       goto eoferr;
+    }
 
     // 读入值
-    if ((val = rdbLoadObject(type, &rdb)) == NULL)
+    if ((val = rdbLoadObject(type, &rdb)) == NULL) {
       goto eoferr;
-
+    }
     // TODO 处理 MASTER
 
     dbAdd(db, key, val);
@@ -650,8 +652,32 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
     memcpy(o->ptr, aux->ptr, sdslen(aux->ptr));
     decrRefCount(aux);
 
+    // 在创建对象的过程中，将值恢复成原来的编码对象
     switch (rdbtype) {
+    case REDIS_RDB_TYPE_HASH_ZIPMAP:
+      // TODO
+      break;
+    case REDIS_RDB_TYPE_LIST_ZIPLIST:
+      o->type = REDIS_LIST;
+      o->encoding = REDIS_ENCODING_ZIPLIST;
 
+      if (ziplistLen(o->ptr) > server.list_max_ziplist_entries) {
+        listTypeConvert(o, REDIS_ENCODING_LINKEDLIST);
+      }
+      break;
+    case REDIS_RDB_TYPE_SET_INTSET:
+      break;
+    case REDIS_RDB_TYPE_ZSET_ZIPLIST:
+      break;
+    case REDIS_RDB_TYPE_HASH_ZIPLIST:
+      o->type = REDIS_HASH;
+      o->encoding = REDIS_ENCODING_ZIPLIST;
+      if (hashTypeLength(o) > server.hash_max_ziplist_entries) {
+        hashTypeConvert(o, REDIS_ENCODING_ZIPLIST);
+      }
+      break;
+    default:
+      break;
     }
   } else {
     redisPanic("Unknown object type");
