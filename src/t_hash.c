@@ -106,10 +106,13 @@ int hashTypeGetFromZiplist(robj *o, robj *field, unsigned char **vstr,
   field = getDecodedObject(field);
 
   zl = o->ptr;
-  fptr = ziplistFind(fptr, field->ptr,sdslen(field->ptr), 1);
+  fptr = ziplistIndex(zl, ZIPLIST_HEAD);
   if (fptr != NULL) {
-    ret = ziplistGet(vptr, vstr, vlen, vll);
-    return 0;
+    fptr = ziplistFind(fptr, field->ptr, sdslen(field->ptr), 1);
+    if (fptr != NULL) {
+      vptr = ziplistNext(zl, fptr);
+      redisAssert(vptr != NULL);
+    }
   }
 
   decrRefCount(field);

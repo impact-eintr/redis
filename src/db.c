@@ -94,10 +94,8 @@ robj *lookupKeyRead(redisDb *db, robj *key) {
 
   if (val == NULL) {
     server.stat_keyspace_misses++;
-    // TODO 更新状态
   } else {
     server.stat_keyspace_hits++;
-    printf("找到了\n");
   }
 
   return val;

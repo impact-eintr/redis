@@ -6,8 +6,11 @@
 #include "dict.h"
 #include "sds.h"
 #include "ziplist.h"
+#include "util.h"
 #include "zmalloc.h"
+
 #include <errno.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -136,6 +139,24 @@ robj *rdbLoadIntegerObject(rio *rdb, int enctype, int encode) {
   } else {
     return createObject(REDIS_STRING, sdsfromlonglong(val));
   }
+}
+
+int rdbTryIntegerEncoding(char *s, size_t len, unsigned char *enc) {
+  long long value;
+  char *endptr, buf[32];
+
+  value = strtoll(s, &endptr, 10);
+  if (endptr[0] != '\0') {
+    return 0;
+  }
+
+  ll2string(buf, 32, value);
+
+  if (strlen(buf) != len || memcpy(buf, s, len)) {
+    return 0;
+  }
+
+  return rdbEncodeInteger(value, enc);
 }
 
 uint32_t rdbLoadLen(rio *rdb, int *isencoded) {
@@ -307,7 +328,7 @@ int rdbLoad(char *filename) {
       break;
 
     // 读入切换数据库指令
-    if (type == REDIS_RDB_OPCODE_SELECTDB) { // fe
+    if (type == REDIS_RDB_OPCODE_SELECTDB) {
       if ((dbid = rdbLoadLen(&rdb, NULL)) == REDIS_RDB_LENERR) {
         goto eoferr;
       }
@@ -331,12 +352,13 @@ int rdbLoad(char *filename) {
 
     // 读入键
     if ((key = rdbLoadStringObject(&rdb)) == NULL) {
-      printf("加载失败\n");
+      printf("加载键失败\n");
       goto eoferr;
     }
 
     // 读入值
     if ((val = rdbLoadObject(type, &rdb)) == NULL) {
+      printf("加载%s: 值失败\n", (char *)key->ptr);
       goto eoferr;
     }
     // TODO 处理 MASTER
@@ -407,6 +429,12 @@ int rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
 
   if (len <= 11) {
     unsigned char buf[5];
+    if ((enclen = rdbTryIntegerEncoding()) > 0){
+      if (rdbWriteRaw(rdb, buf, enclen) == -1) {
+        return -1;
+      }
+      return enclen;
+    }
   }
 
   if (server.rdb_compression && len > 20) {
@@ -484,6 +512,7 @@ robj *rdbGenericLoadStringObject(rio *rdb, int encode) {
     return NULL;
 
   val = sdsnewlen(NULL, len);
+  printf("len : %d\n", len);
   if (len && rioRead(rdb, val, len) == 0) {
     sdsfree(val);
     return NULL;
@@ -565,9 +594,37 @@ int rdbSaveObject(rio *rdb, robj *o) {
   } else if (o->type == REDIS_HASH) {
 
     if (o->encoding == REDIS_ENCODING_ZIPLIST) {
-
+      size_t l = ziplistBlobLen((unsigned char *)o->ptr);
+      printf("存入字节: %ld\n", l);
+      if ((n = rdbSaveRawString(rdb, o->ptr, l)) == -1) {
+        return -1;
+      }
+      nwritten += n;
     } else if (o->encoding == REDIS_ENCODING_HT) {
+      dictIterator *di = dictGetIterator(o->ptr);
+      dictEntry *de;
 
+      if ((n = rdbSaveLen(rdb, dictSize((dict *)o->ptr))) == -1) {
+        return -1;
+      }
+      nwritten += n;
+
+      // 迭代字典
+      while ((de = dictNext(di)) != NULL) {
+        robj *key = dictGetKey(de);
+        robj *val = dictGetVal(de);
+
+        // 键和值都以字符串对象的形式保存
+        if ((n = rdbSaveStringObject(rdb, key)) == -1) {
+          return -1;
+        }
+        nwritten += n;
+        if ((n = rdbSaveStringObject(rdb, val)) == -1) {
+          return -1;
+        }
+        nwritten += n;
+      }
+      dictReleaseIterator(di);
     } else {
       redisPanic("Unknown hash encoding");
     }
@@ -591,7 +648,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
   size_t len;
   unsigned int i;
 
-    printf("type %d\n", rdbtype);
+  printf("type %d\n", rdbtype);
   // 载入各种对象
   if (rdbtype == REDIS_RDB_TYPE_STRING) {
     if ((o = rdbLoadEncodedStringObject(rdb)) == NULL) {
@@ -644,6 +701,7 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
     robj *aux = rdbLoadStringObject(rdb);
 
     if (aux == NULL) {
+      printf("啊?\n");
       return NULL;
     }
 
