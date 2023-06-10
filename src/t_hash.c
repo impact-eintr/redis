@@ -1,4 +1,5 @@
 #include "dict.h"
+#include "zmalloc.h"
 #include "redis.h"
 #include "ziplist.h"
 #include <limits.h>
@@ -62,6 +63,10 @@ unsigned long hashTypeLength(robj *o) {
   return length;
 }
 
+hashTypeIterator *hashTypeInitIterator(robj *dubject) {
+  hashTypeIterator *hi = zmalloc(sizeof(hashTypeIterator));
+}
+
 // 将一个ziplist编码的hash对象 o 转换成其他编码
 void hashTypeConvertZiplist(robj *o, int enc) {
   // 确保输入的对象是一个ziplist
@@ -73,8 +78,7 @@ void hashTypeConvertZiplist(robj *o, int enc) {
     hashTypeIterator *hi;
     dict *dict;
     int ret;
-    // TODO 转换类型
-    //hi = hashTypeInitIterator(o);
+    hi = hashTypeInitIterator(o);
 
     //dict = dictCreate(&hashDictType, NULL);
 

@@ -67,14 +67,28 @@ int rdbSaveLen(rio *rdb, uint32_t len) {
   size_t nwritten;
 
   if (len < (1 << 6)) { // save a 6 bit len
-    buf[0] = (len&0xFF)|(REDIS_RDB_6BITLEN<<6);
+    buf[0] = (len&0x3F)|(REDIS_RDB_6BITLEN<<6);
     if (rdbWriteRaw(rdb, buf, 1) == -1) {
       return -1;
     }
     nwritten = 1;
   } else if (len < (1 << 14)) { // save a 14 bit len
-
+    buf[0] = ((len>>8)&0x3F)|(REDIS_RDB_14BITLEN<<6);
+    buf[1] = len&0xFF;
+    if (rdbWriteRaw(rdb, buf, 2) == -1) {
+      return -1;
+    }
+    nwritten = 2;
   } else { // save a 32 bit len
+    buf[0] = (REDIS_RDB_32BITLEN<<6);
+    if (rdbWriteRaw(rdb, buf, 1) == -1) {
+      return -1;
+    }
+    len = htonl(len);
+    if (rdbWriteRaw(rdb, &len, 4) == -1) {
+      return -1;
+    }
+    nwritten = 1+4;
   }
 
   return nwritten;
@@ -170,6 +184,7 @@ uint32_t rdbLoadLen(rio *rdb, int *isencoded) {
     return REDIS_RDB_LENERR;
 
   type = (buf[0]&0xC0)>>6;
+  printf("load type: %d\n", type);
   if (type == REDIS_RDB_ENCVAL) { // value
     if (isencoded)
       *isencoded = 1;
@@ -179,6 +194,7 @@ uint32_t rdbLoadLen(rio *rdb, int *isencoded) {
   } else if (type == REDIS_RDB_14BITLEN) {
     if (rioRead(rdb, buf+1, 1) == 0)
       return REDIS_RDB_LENERR;
+    printf("load type: %d len %d\n", type, ((buf[0]&0x3F)<<8)|buf[1]);
     return ((buf[0]&0x3F)<<8)|buf[1];
   } else {
     if (rioRead(rdb, &len, 4) == 0)
@@ -427,9 +443,10 @@ int rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
   int enclen;
   int n, nwritten = 0;
 
+    printf("??? %d\n", len);
   if (len <= 11) {
     unsigned char buf[5];
-    if ((enclen = rdbTryIntegerEncoding()) > 0){
+    if ((enclen = rdbTryIntegerEncoding((char *)s, len, buf)) > 0){
       if (rdbWriteRaw(rdb, buf, enclen) == -1) {
         return -1;
       }
@@ -492,6 +509,7 @@ robj *rdbGenericLoadStringObject(rio *rdb, int encode) {
 
   // 先加载编码长度
   len = rdbLoadLen(rdb, &isencoded);
+  printf("len : %d\n", len);
 
   if (isencoded) {
     switch (len) {
@@ -512,7 +530,6 @@ robj *rdbGenericLoadStringObject(rio *rdb, int encode) {
     return NULL;
 
   val = sdsnewlen(NULL, len);
-  printf("len : %d\n", len);
   if (len && rioRead(rdb, val, len) == 0) {
     sdsfree(val);
     return NULL;
@@ -766,8 +783,6 @@ int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime, lo
     return -1;
   return 1;
 }
-
-
 
 // 将数据库保存到磁盘中
 int rdbSave(char *filename) {
