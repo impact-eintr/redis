@@ -481,6 +481,16 @@ dictType zsetDictType = {
   NULL                       /* val destructor */
 };
 
+
+dictType hashDictType = {
+  dictEncObjHash,
+  NULL,
+  NULL,
+  dictEncObjKeyCompare,
+  dictRedisObjectDestructor, /* key destructor */
+  dictRedisObjectDestructor  /* val destructor */
+};
+
 // 尝试缩小字典体积来节约内存
 void tryResizeHashTables(int dbid) {
   if (htNeedsResize(server.db[dbid].dict)) {
