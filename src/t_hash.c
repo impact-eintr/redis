@@ -93,7 +93,6 @@ void hashTypeReleaseIterator(hashTypeIterator *hi) {
 
 int hashTypeNext(hashTypeIterator *hi) {
   if (hi->encoding == REDIS_ENCODING_ZIPLIST) {
-    printf("Next Hash Element\n");
     unsigned char *zl;
     unsigned char *fptr, *vptr;
     zl = hi->subject->ptr;
@@ -130,6 +129,68 @@ int hashTypeNext(hashTypeIterator *hi) {
   return REDIS_OK;
 }
 
+void hashTypeCurrentFromZiplist(hashTypeIterator *hi, int what,
+                                unsigned char **vstr, unsigned int *vlen,
+                                long long *vll) {
+  int ret;
+
+  // 确保编码正确
+  redisAssert(hi->encoding == REDIS_ENCODING_ZIPLIST);
+
+  // 取出键
+  if (what & REDIS_HASH_KEY) {
+    ret = ziplistGet(hi->fptr, vstr, vlen, vll);
+    redisAssert(ret);
+
+    // 取出值
+  } else {
+    ret = ziplistGet(hi->vptr, vstr, vlen, vll);
+    redisAssert(ret);
+  }
+}
+
+void hashTypeCurrentFromHashTable(hashTypeIterator *hi, int what, robj **dst) {
+  redisAssert(hi->encoding == REDIS_ENCODING_HT);
+
+  // 取出键
+  if (what & REDIS_HASH_KEY) {
+    *dst = dictGetKey(hi->de);
+
+    // 取出值
+  } else {
+    *dst = dictGetVal(hi->de);
+  }
+}
+
+robj *hashTypeCurrentObject(hashTypeIterator *hi, int what) {
+  robj *dst;
+
+  if (hi->encoding == REDIS_ENCODING_ZIPLIST) { // ZIPLIST
+    unsigned char *vstr = NULL;
+    unsigned int vlen = UINT_MAX;
+    long long vll = LLONG_MAX;
+
+    // 取出键或值
+    hashTypeCurrentFromZiplist(hi, what, &vstr, &vlen, &vll);
+
+    // 创建键或值的对象
+    if (vstr) {
+      dst = createStringObject((char *)vstr, vlen);
+    } else {
+      dst = createStringObjectFromLongLong(vll);
+    }
+  } else if (hi->encoding == REDIS_ENCODING_HT) { // HT
+    hashTypeCurrentFromHashTable(hi, what, &dst);
+    incrRefCount(dst);
+  } else { // 未知编码
+    redisPanic("Unknown hash encoding");
+  }
+
+  // 返回对象
+  return dst;
+}
+
+
 // 将一个ziplist编码的hash对象 o 转换成其他编码
 void hashTypeConvertZiplist(robj *o, int enc) {
   // 确保输入的对象是一个ziplist
@@ -150,6 +211,7 @@ void hashTypeConvertZiplist(robj *o, int enc) {
       // 取出 ziplist 里的键
       field = hashTypeCurrentObject(hi, REDIS_HASH_KEY);
       field = tryObjectEncoding(field);
+      printf("ziplist element: %s\n", (char *)field->ptr);
 
       // 取出 ziplist 里的值
       value = hashTypeCurrentObject(hi, REDIS_HASH_VALUE);
@@ -162,8 +224,6 @@ void hashTypeConvertZiplist(robj *o, int enc) {
         //                ziplistBlobLen(o->ptr));
         redisAssert(ret == DICT_OK);
       }
-
-      printf("转换中\n");
     }
 
     // 释放 ziplist 的迭代器
@@ -219,7 +279,20 @@ int hashTypeGetFromZiplist(robj *o, robj *field, unsigned char **vstr,
 }
 
 int hashTypeGetFromHashTable(robj *o, robj *field, robj **value) {
+  dictEntry *de;
 
+  redisAssert(o->encoding == REDIS_ENCODING_HT);
+
+  de = dictFind(o->ptr, field);
+
+  if (de == NULL) {
+    printf("????? %s\n", (char *)o->ptr);
+    return -1;
+  }
+
+  *value = dictGetVal(de);
+
+  return 0;
 }
 
 robj *hashTypeGetObject(robj *o, robj *key) {
@@ -399,7 +472,7 @@ void hgetCommand(redisClient *c) {
       checkType(c, o, REDIS_HASH)) {
     return;
   }
-
+  printf("获取 %s %s \n", (char *)o->ptr, (char *)c->argv[2]->ptr);
   addHashFieldToReply(c, o, c->argv[2]);
 }
 

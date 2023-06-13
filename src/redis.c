@@ -361,16 +361,6 @@ long long ustime(void) {
   return ust;
 }
 
-
-
-int dictEncObjKeyCompare(void *privdata, const void *key1, const void*key2) {
-
-}
-
-unsigned int dictEncObjHash(const void *key) {
-
-}
-
 /* Return the UNIX time in milliseconds */
 // 返回毫秒格式的 UNIX 时间
 // 1 秒 = 1 000 毫秒
@@ -460,6 +450,46 @@ int htNeedsResize(dict *dict) {
   return (size && used && size > DICT_HT_INITIAL_SIZE &&
           (used * 100 / size < REDIS_HT_MINFILL));
 }
+
+int dictEncObjKeyCompare(void *privdata, const void *key1, const void *key2) {
+  robj *o1 = (robj *)key1, *o2 = (robj *)key2;
+  int cmp;
+
+  if (o1->encoding == REDIS_ENCODING_INT && o2->encoding == REDIS_ENCODING_INT)
+      return o1->ptr == o2->ptr;
+
+  o1 = getDecodedObject(o1);
+  o2 = getDecodedObject(o2);
+  cmp = dictSdsKeyCompare(privdata, o1->ptr, o2->ptr);
+  decrRefCount(o1);
+  decrRefCount(o2);
+  return cmp;
+}
+
+unsigned int dictEncObjHash(const void *key) {
+  robj *o = (robj *) key;
+
+  if (sdsEncodedObject(o)) {
+    return dictGenHashFunction(o->ptr, sdslen((sds)o->ptr));
+  } else {
+    if (o->encoding == REDIS_ENCODING_INT) {
+      char buf[32];
+      int len;
+
+      len = ll2string(buf, 32, (long)o->ptr);
+      return dictGenHashFunction((unsigned char *)buf, len);
+    } else {
+      unsigned int hash;
+
+      o = getDecodedObject(o);
+      hash = dictGenHashFunction(o->ptr, sdslen((sds)o->ptr));
+      decrRefCount(o);
+      return hash;
+    }
+  }
+}
+
+
 
 /* Sets type hash table */
 dictType setDictType = {
