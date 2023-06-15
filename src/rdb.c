@@ -612,7 +612,6 @@ int rdbSaveObject(rio *rdb, robj *o) {
 
     if (o->encoding == REDIS_ENCODING_ZIPLIST) {
       size_t l = ziplistBlobLen((unsigned char *)o->ptr);
-      printf("存入字节: %ld\n", l);
       if ((n = rdbSaveRawString(rdb, o->ptr, l)) == -1) {
         return -1;
       }
@@ -665,14 +664,15 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
   size_t len;
   unsigned int i;
 
-  printf("type %d\n", rdbtype);
   // 载入各种对象
   if (rdbtype == REDIS_RDB_TYPE_STRING) {
+    printf("RDB STRING type\n");
     if ((o = rdbLoadEncodedStringObject(rdb)) == NULL) {
       return NULL;
     }
     o = tryObjectEncoding(o);
   } else if (rdbtype == REDIS_RDB_TYPE_LIST) {
+    printf("RDB LIST type\n");
     if ((len = rdbLoadLen(rdb, NULL)) == REDIS_RDB_LENERR) {
       return NULL;
     }
@@ -705,20 +705,88 @@ robj *rdbLoadObject(int rdbtype, rio *rdb) {
       printf("元素 %s\n", (char *)ele->ptr);
     }
   } else if (rdbtype == REDIS_RDB_TYPE_SET) {
-
+    printf("RDB SET type\n");
   } else if (rdbtype == REDIS_RDB_TYPE_ZSET) {
+    printf("RDB ZSET type\n");
 
   } else if (rdbtype == REDIS_RDB_TYPE_HASH) {
+    printf("RDB HASH type\n");
+    // 加载 Hash 类型的数据
+    size_t len;
+    int ret;
 
+    len = rdbLoadLen(rdb, NULL);
+    if (len == REDIS_RDB_LENERR) {
+      return NULL;
+    }
+
+    // 创建哈希表
+    o = createHashObject();
+
+    if (len > server.hash_max_ziplist_entries) {
+      hashTypeConvert(o, REDIS_ENCODING_HT);
+    }
+
+    // 载入数据
+    while (o->encoding == REDIS_ENCODING_ZIPLIST && len > 0) {
+      robj *field, *value;
+      len--;
+
+      field = rdbLoadStringObject(rdb); // 载入域
+      if (field == NULL) return NULL;
+      redisAssert(sdsEncodedObject(field));
+      value = rdbLoadStringObject(rdb); // 载入域
+      if (value == NULL) return NULL;
+      redisAssert(sdsEncodedObject(value));
+
+      o->ptr = ziplistPush(o->ptr, field->ptr, sdslen(field->ptr), ZIPLIST_TAIL);
+      o->ptr = ziplistPush(o->ptr, value->ptr, sdslen(value->ptr), ZIPLIST_TAIL);
+
+      if (sdslen(field->ptr) > server.hash_max_ziplist_value ||
+        sdslen(value->ptr) > server.hash_max_ziplist_value) {
+        decrRefCount(field);
+        decrRefCount(value);
+        hashTypeConvert(o, REDIS_ENCODING_HT);
+        break;
+      }
+      decrRefCount(field);
+      decrRefCount(value);
+    }
+
+    // 有可能进行编码转换
+    while (o->encoding == REDIS_ENCODING_HT && len > 0) {
+      robj *field, *value;
+
+      len--;
+
+      /* Load encoded strings */
+      // 域和值都载入为字符串对象
+      field = rdbLoadEncodedStringObject(rdb);
+      if (field == NULL)
+        return NULL;
+      value = rdbLoadEncodedStringObject(rdb);
+      if (value == NULL)
+        return NULL;
+
+      // 尝试编码
+      field = tryObjectEncoding(field);
+      value = tryObjectEncoding(value);
+
+      ret = dictAdd((dict *)o->ptr, field, value);
+      redisAssert(ret == REDIS_OK);
+    }
+
+    redisAssert(len == 0);
   } else if (rdbtype == REDIS_RDB_TYPE_HASH_ZIPMAP  ||
                rdbtype == REDIS_RDB_TYPE_LIST_ZIPLIST ||
                rdbtype == REDIS_RDB_TYPE_SET_INTSET   ||
                rdbtype == REDIS_RDB_TYPE_ZSET_ZIPLIST ||
              rdbtype == REDIS_RDB_TYPE_HASH_ZIPLIST) {
+
+    printf("RDB Other type\n");
     robj *aux = rdbLoadStringObject(rdb);
 
     if (aux == NULL) {
-      printf("啊?\n");
       return NULL;
     }
 
