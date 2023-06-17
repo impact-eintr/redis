@@ -366,6 +366,14 @@ long long ustime(void) {
 // 1 秒 = 1 000 毫秒
 long long mstime(void) { return ustime() / 1000; }
 
+void exitFromChild(int retcode) {
+#ifdef COVERAGE_TEST
+  exit(retcode);
+#else
+  _exit(retcode);
+#endif
+}
+
 /*          SDS DICT            */
 unsigned int dictSdsHash(const void *key) {
   return dictGenHashFunction((unsigned char*)key, sdslen((char*)key));
@@ -714,6 +722,13 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
   clientCron();
 
   databasesCron();
+
+  // TODO 执行 AOF
+  if (server.rdb_child_pid != -1 && server.aof_child_pid != -1) {
+
+  } else {
+
+  }
 
   return 1000/server.hz;
 }
@@ -1154,6 +1169,27 @@ int processCommand(redisClient *c) {
 
 
 /* ================================ Shutdown ================================  */
+/* Close listening sockets. Also unlink the unix domain socket if
+ * unlink_unix_socket is non-zero. */
+// 关闭监听套接字
+void closeListeningSockets(int unlink_unix_socket) {
+  int j;
+
+  for (j = 0; j < server.ipfd_count; j++)
+    close(server.ipfd[j]);
+
+  if (server.sofd != -1)
+    close(server.sofd);
+
+  if (server.cluster_enabled)
+    for (j = 0; j < server.cfd_count; j++)
+        close(server.cfd[j]);
+
+  if (unlink_unix_socket && server.unixsocket) {
+    redisLog(REDIS_NOTICE, "Removing the unix socket file.");
+    unlink(server.unixsocket); /* don't care if this fails */
+  }
+}
 
 /* ================================ Commands ================================  */
 

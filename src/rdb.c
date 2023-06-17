@@ -961,7 +961,61 @@ werr:
 
 // 后台保存
 int rdbSaveBackground(char *filename) {
+  pid_t childpid;
+  long long start;
 
+  if (server.rdb_child_pid != -1) {
+    return REDIS_ERR;
+  }
+
+  server.dirty_before_bgsave = server.dirty; // 记录BGSAVE之前的修改次数
+  server.lastbgsave_try = time(NULL);
+  start = ustime();
+
+  if ((childpid = fork()) == 0) { // 子进程
+    int retval;
+    closeListeningSockets(0); // 关闭子进程的socket连接 因为 fork 后复制了整个进程空间
+
+    // TODO 设置进程的标题
+    retval = rdbSave(filename);
+
+    if (retval == REDIS_OK) {
+      size_t private_dirty = zmalloc_get_private_dirty();
+
+      if (private_dirty) {
+        redisLog(REDIS_NOTICE, "RDB: %zu MB of memory used by copy-on-write",
+                 private_dirty / (1024 * 1024));
+      }
+    }
+
+    // 向父进程发送信号
+    exitFromChild((retval == REDIS_OK) ? 0 : 1);
+
+  } else {
+    server.stat_fork_time = ustime() - start;
+
+    if (childpid == -1) {
+      server.lastbgsave_status = REDIS_ERR;
+      redisLog(REDIS_WARNING, "Can not save in background: fork: %s", strerror(errno));
+      return REDIS_ERR;
+    }
+
+    // 打印 BGSAVE 开始的日志
+    redisLog(REDIS_NOTICE, "Background saving started by pid %d", childpid);
+
+    // 记录数据库开始 BGSAVE 的时间
+    server.rdb_save_time_start = time(NULL);
+
+    // 记录负责执行 BGSAVE 的子进程 ID
+    server.rdb_child_pid = childpid;
+
+    // 关闭自动 rehash
+    updateDictResizePolicy();
+
+    return REDIS_OK;
+  }
+
+  return REDIS_OK;
 }
 
 
@@ -984,7 +1038,7 @@ void bgsaveCommand(redisClient *c) {
     addReplyError(c, "Background saving already in progress");
   } else if (server.aof_child_pid != -1) { // 后台执行aof时不执行
     addReplyError(c, "Can't BGSAVE while AOF log rewriting is in progress");
-  } else if (1) { // TODO
+  } else if (rdbSaveBackground(server.rdb_filename) == REDIS_OK) {
     addReplyStatus(c, "Background saving started");
   } else {
     addReply(c, shared.err);

@@ -219,25 +219,42 @@ void _addReplyStringToList(redisClient *c, char *s, size_t len) {
 
 void closeTimedoutClients(void);
 
+static void freeClientArgv(redisClient *c) {
+  int j;
+  for (j = 0;j < c->argc; j++) {
+    decrRefCount(c->argv[j]);
+  }
+  c->argc = 0;
+  c->cmd = NULL;
+}
 
 // 同步释放客户端
 void freeClient(redisClient *c) {
-  // TODO
+  listNode *ln;
+  if (server.current_client == c) {
+    server.current_client = NULL;
+  }
 
+  // TODO 退订所有频道和模式
+
+
+  if (c->fd != -1) {
+    aeDeleteFileEvent(server.el, c->fd, AE_READABLE);
+    aeDeleteFileEvent(server.el, c->fd, AE_WRITABLE);
+    close(c->fd);
+  }
+
+  listRelease(c->reply);
+  freeClientArgv(c);
+
+  if (c->name) decrRefCount(c->name);
+  zfree(c->argv);
   zfree(c);
 }
 
 // 异步释放客户端
 void freeClientAsync(redisClient *c) {
 
-}
-
-static void freeClientArgv(redisClient *c) {
-  for (int j = 0;j < c->argc;j++) {
-    decrRefCountVoid(c->argv[j]);
-  }
-  c->argc = 0;
-  c->cmd = NULL;
 }
 
 // 在客户端执行完命令后重置客户端 准备执行下个指令
