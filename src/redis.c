@@ -881,6 +881,9 @@ void initServerConfig() {
   server.hll_sparse_max_bytes = REDIS_DEFAULT_HLL_SPARSE_MAX_BYTES;
   server.shutdown_asap = 0;
 
+  server.lruclock = getLRUClock();
+  resetServerSaveParams();
+
   server.commands = dictCreate(&commandTableDictType, NULL);
   server.orig_commands = dictCreate(&commandTableDictType, NULL);
   populateCommandTable();
