@@ -521,6 +521,8 @@ struct redisServer
   // MIGRATE 缓存
   dict *migrate_cached_sockets; /* MIGRATE cached sockets */
 
+  struct redisCommand *delCommand, *multiCommand, *lpushCommand, *lpopCommand,
+    *rpopCommand;
 
   /* RDB / AOF loading information*/
   int loading;
@@ -679,6 +681,22 @@ struct redisServer
 
   /* Propagation of commands in AOF / replication */
   redisOpArray also_propagate; /* Additional command to propagate. */
+
+
+  // Logging
+  char *logfile;
+
+  // 复制(master)
+  int slaveseldb; // last selected DB
+  long long master_repl_offset; // 全局复制偏移量
+  int repl_ping_slave_period; // master发送 ping 的频率
+
+  // 复制(slave)
+  char *masterauth; // 主服务的验证密码
+  char *masterhost;
+  int masterport;
+  int repl_timeout;
+  redisClient *master; // 主服务器对应的客户端
 
   // Limits
   int maxclients;

@@ -884,14 +884,28 @@ void initServerConfig() {
   server.lruclock = getLRUClock();
   resetServerSaveParams();
 
+  //初始化复制相关的状态
+  server.masterauth = NULL;
+  server.masterhost = NULL;
+  server.masterport = 6379;
+  server.master = NULL;
+
+  server.master_repl_offset = 0;
+
   server.commands = dictCreate(&commandTableDictType, NULL);
   server.orig_commands = dictCreate(&commandTableDictType, NULL);
   populateCommandTable();
+  server.delCommand = lookupCommandByCString("del");
+  server.multiCommand = lookupCommandByCString("multi");
+  server.lpushCommand = lookupCommandByCString("lpush");
+  server.lpopCommand = lookupCommandByCString("lpop");
+  server.rpopCommand = lookupCommandByCString("rpop");
 }
 
 // 监听端口
 int listenToPort(int port, int *fds, int *count) {
   int j;
+
 
   if (server.bindaddr_count == 0) {
     server.bindaddr[0] = NULL;
@@ -1318,6 +1332,29 @@ void test() {
 
 }
 
+void version() {
+  exit(0);
+}
+
+void usage() {
+  fprintf(stderr, "Usage: ./redis-server [/path/to/redis.conf] [options]\n");
+  fprintf(stderr, "       ./redis-server - (read config from stdin)\n");
+  fprintf(stderr, "       ./redis-server -v or --version\n");
+  fprintf(stderr, "       ./redis-server -h or --help\n");
+  fprintf(stderr, "       ./redis-server --test-memory <megabytes>\n\n");
+  fprintf(stderr, "Examples:\n");
+  fprintf(stderr, "       ./redis-server (run the server with default conf)\n");
+  fprintf(stderr, "       ./redis-server /etc/redis/6379.conf\n");
+  fprintf(stderr, "       ./redis-server --port 7777\n");
+  fprintf(stderr,
+          "       ./redis-server --port 7777 --slaveof 127.0.0.1 8888\n");
+  fprintf(stderr,
+          "       ./redis-server /etc/myredis.conf --loglevel verbose\n\n");
+  fprintf(stderr, "Sentinel mode:\n");
+  fprintf(stderr, "       ./redis-server /etc/sentinel.conf --sentinel\n");
+  exit(1);
+}
+
 void redisAsciiArt(void) {
 #include "asciilogo.h"
   char *buf = zmalloc(1024 * 16);
@@ -1335,6 +1372,8 @@ void redisAsciiArt(void) {
   redisLogRaw(REDIS_NOTICE, buf);
   zfree(buf);
 }
+
+void memtest(size_t magabytes, int passes);
 
 // TODO 信号处理函数
 
@@ -1355,27 +1394,80 @@ void loadDataFromDisk(void) {
 }
 
 int main(int argc, char **argv) {
-    // 初始化服务器
-    initServerConfig();
-    initServer();
+  // 初始化服务器
+  initServerConfig();
 
-    redisAsciiArt();
+  // 检查用户是否指定了配置文件
+  if (argc >= 2) {
+    int j = 1; /* First option to parse in argv[] */
+    sds options = sdsempty();
+    char *configfile = NULL;
 
-    if (!server.sentinel_mode) {
-      loadDataFromDisk();
-    } else {
-      printf("哨兵模式\n");
+    /* Handle special options --help and --version */
+    // 处理特殊选项 -h 、-v 和 --test-memory
+    if (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0)
+      version();
+    if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)
+      usage();
+    if (strcmp(argv[1], "--test-memory") == 0) {
+      if (argc == 3) {
+        memtest(atoi(argv[2]), 50);
+        exit(0);
+      } else {
+        fprintf(stderr,
+                "Please specify the amount of memory to test in megabytes.\n");
+        fprintf(stderr, "Example: ./redis-server --test-memory 4096\n\n");
+        exit(1);
+      }
     }
 
-    // 运行事件处理器，一直到服务器关闭为止
-    aeSetBeforeSleepProc(server.el, beforeSleep);
-    aeMain(server.el);
+    if (argv[j][0] != '-' || argv[j][1] != '-') {
+      configfile = argv[j++];
+    }
 
-    // 服务器关闭，停止事件循环
-    aeDeleteEventLoop(server.el);
+    while (j != argc) {
+      if (argv[j][0] == '-' && argv[j][1] == '-') {
+        /* Option name */
+        if (sdslen(options))
+          options = sdscat(options, "\n");
+        options = sdscat(options, argv[j] + 2);
+        options = sdscat(options, " ");
+      } else {
+        /* Option argument */
+        options = sdscatrepr(options, argv[j], strlen(argv[j]));
+        options = sdscat(options, " ");
+      }
+      j++;
+    }
+
+    if (configfile) {
+      server.configfile = getAbsolutePath(configfile);
+    }
+    resetServerSaveParams();
+
+    loadServerConfig(configfile, options);
+    sdsfree(options);
+  }
+
+  initServer();
+
+  redisAsciiArt();
+
+  if (!server.sentinel_mode) {
+    loadDataFromDisk();
+  } else {
+    printf("哨兵模式\n");
+  }
+
+  // 运行事件处理器，一直到服务器关闭为止
+  aeSetBeforeSleepProc(server.el, beforeSleep);
+  aeMain(server.el);
+
+  // 服务器关闭，停止事件循环
+  aeDeleteEventLoop(server.el);
 
 
-    return 0;
+  return 0;
 }
 
 #endif

@@ -53,4 +53,5 @@ dkms.conf
 
 .vscode/
 ./src/a.out
+./src/redis
 ./src/dump.rdb
