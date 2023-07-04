@@ -29,8 +29,11 @@ OTHER = multi.c
 
 ALL:redis
 
-run:redis
-	./redis redis.ini
+slave:redis
+	./redis slave.ini
+
+master:clean redis
+	./redis master.ini
 
 redis:
 	$(CC) $(CFLAGS) $(CORE) $(CONFIG) $(DATASTRUCT) $(NETWORK) $(PERSISTENCE) $(REPLICATION) $(OTHER) $(UTILS) -o $@

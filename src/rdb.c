@@ -443,7 +443,6 @@ int rdbSaveRawString(rio *rdb, unsigned char *s, size_t len) {
   int enclen;
   int n, nwritten = 0;
 
-    printf("??? %d\n", len);
   if (len <= 11) {
     unsigned char buf[5];
     if ((enclen = rdbTryIntegerEncoding((char *)s, len, buf)) > 0){

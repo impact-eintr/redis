@@ -697,6 +697,33 @@ struct redisServer
   int masterport;
   int repl_timeout;
   redisClient *master; // 主服务器对应的客户端
+  redisClient *cached_master; // 被缓存的master PSYNC时使用
+  int repl_state; // 从服务器使用的 复制状态
+  int repl_syncio_timeout; // IO 超时时间
+  off_t repl_transfer_size; // RDB 文件的大小
+  off_t repl_transfer_read;
+  off_t repl_transferlast_fsync_off;
+  // 主服务器的套接字
+  int repl_transfer_s;     /* Slave -> Master SYNC socket */
+  // 保存 RDB 文件的临时文件的描述符
+  int repl_transfer_fd;    /* Slave -> Master SYNC temp file descriptor */
+  // 保存 RDB 文件的临时文件名字
+  char *repl_transfer_tmpfile; /* Slave-> master SYNC temp file name */
+  // 最近一次读入 RDB 内容的时间
+  time_t repl_transfer_lastio; /* Unix time of the latest read, for timeout */
+  int repl_serve_stale_data; /* Serve stale data when link is down? */
+  // 是否只读从服务器？
+  int repl_slave_ro;          /* Slave is read only? */
+  // 连接断开的时长
+  time_t repl_down_since; /* Unix time at which link with master went down */
+  // 是否要在 SYNC 之后关闭 NODELAY ？
+  int repl_disable_tcp_nodelay;   /* Disable TCP_NODELAY after SYNC? */
+  // 从服务器优先级
+  int slave_priority;             /* Reported in INFO and used by Sentinel. */
+  // 本服务器（从服务器）当前主服务器的 RUN ID
+  char repl_master_runid[REDIS_RUN_ID_SIZE+1];  /* Master run id for PSYNC. */
+  // 初始化偏移量
+  long long repl_master_initial_offset;         /* Master PSYNC offset. */
 
   // Limits
   int maxclients;

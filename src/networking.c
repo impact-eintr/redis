@@ -644,9 +644,18 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
   server.current_client = NULL;
 }
 
-void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask);
-void addReply(redisClient *c, robj *obj);
-void addReplySds(redisClient *c, sds s);
+void addReplySds(redisClient *c, sds s) {
+  if (prepareClientToWrite(c) != REDIS_OK) {
+    sdsfree(s);
+    return;
+  }
+
+  if (_addReplyToBuffer(c, s, sdslen(s)) == REDIS_OK) {
+    sdsfree(s);
+  } else {
+    _addReplySdsToList(c, s);
+  }
+}
 
 // 将 c String 中的内容复制到回复缓冲区
 void addReplyString(redisClient *c, char *s, size_t len) {

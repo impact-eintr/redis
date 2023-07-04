@@ -52,6 +52,6 @@ Mkfile.old
 dkms.conf
 
 .vscode/
-./src/a.out
-./src/redis
-./src/dump.rdb
+src/a.out
+src/redis
+src/*.rdb
