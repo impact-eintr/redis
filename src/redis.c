@@ -853,6 +853,9 @@ void initServerConfig() {
   int j;
   /*服务器状态*/
 
+  // 设置服务器的运行ID
+  getRandomHexChars(server.runid,REDIS_RUN_ID_SIZE);
+
   server.configfile = NULL;
   // 设置默认服务器频率
   server.hz = REDIS_DEFAULT_HZ;

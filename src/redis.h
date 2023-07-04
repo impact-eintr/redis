@@ -180,6 +180,13 @@
 #define REDIS_REQ_INLINE 1
 #define REDIS_REQ_MULTIBULK 2
 
+/* Slave replication state - from the point of view of the slave. */
+#define REDIS_REPL_NONE 0 /* No active replication */
+#define REDIS_REPL_CONNECT 1 /* Must connect to master */
+#define REDIS_REPL_CONNECTING 2 /* Connecting to master */
+#define REDIS_REPL_RECEIVE_PONG 3 /* Wait for PING reply */
+#define REDIS_REPL_TRANSFER 4 /* Receiving .rdb from master */
+#define REDIS_REPL_CONNECTED 5 /* Connected to master */
 
 /* List related stuff */
 #define REDIS_HEAD 0
@@ -389,6 +396,30 @@ typedef struct redisClient
 
   // TODO
 
+  // 复制状态
+  int replstate; /* replication state if this is a slave */
+  // 用于保存主服务器传来的 RDB 文件的文件描述符
+  int repldbfd; /* replication DB file descriptor */
+
+  // 读取主服务器传来的 RDB 文件的偏移量
+  off_t repldboff; /* replication DB file offset */
+  // 主服务器传来的 RDB 文件的大小
+  off_t repldbsize; /* replication DB file size */
+
+  sds replpreamble; /* replication DB preamble. */
+
+  // 主服务器的复制偏移量
+  long long reploff; /* replication offset if this is our master */
+  // 从服务器最后一次发送 REPLCONF ACK 时的偏移量
+  long long repl_ack_off; /* replication ack offset, if this is a slave */
+  // 从服务器最后一次发送 REPLCONF ACK 的时间
+  long long repl_ack_time; /* replication ack time, if this is a slave */
+  // 主服务器的 master run ID
+  // 保存在客户端，用于执行部分重同步
+  char replrunid[REDIS_RUN_ID_SIZE + 1]; /* master run id if this is a master */
+  // 从服务器的监听端口号
+  int slave_listening_port; /* As configured with: SLAVECONF listening-port */
+
   // 回复缓冲区
   int bufpos;
   char buf[REDIS_REPLY_CHUNK_BYTES];
@@ -471,6 +502,8 @@ struct redisServer
   int activerehashing; // databaseCron进行渐进式Rehash
 
   char *pidfile; // pid文件
+
+  char runid[REDIS_RUN_ID_SIZE+1];
 
   int sentinel_mode; // 服务是否运行在哨兵模式
 
@@ -690,6 +723,17 @@ struct redisServer
   int slaveseldb; // last selected DB
   long long master_repl_offset; // 全局复制偏移量
   int repl_ping_slave_period; // master发送 ping 的频率
+
+  // backlog 本身
+  char *repl_backlog;
+  long long repl_backlog_size;
+  long long repl_backlog_histlen;
+  long long repl_backlog_idx;
+  long long repl_backlog_off;
+  time_t repl_backlog_time_limit; // backlog 的过期时间
+
+  // backlog 距离上次有从服务器的时间
+  time_t repl_no_slaves_since;
 
   // 复制(slave)
   char *masterauth; // 主服务的验证密码
