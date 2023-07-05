@@ -251,7 +251,7 @@ struct redisCommand redisCommandTable[] = {
     {"discard", discardCommand, 1, "rs", 0, NULL, 0, 0, 0, 0, 0},
     {"sync", syncCommand, 1, "ars", 0, NULL, 0, 0, 0, 0, 0},
     {"psync", syncCommand, 3, "ars", 0, NULL, 0, 0, 0, 0, 0},
-    //    {"replconf", replconfCommand, -1, "arslt", 0, NULL, 0, 0, 0, 0, 0},
+    {"replconf", replconfCommand, -1, "arslt", 0, NULL, 0, 0, 0, 0, 0},
     //    {"flushdb", flushdbCommand, 1, "w", 0, NULL, 0, 0, 0, 0, 0},
     //    {"flushall", flushallCommand, 1, "w", 0, NULL, 0, 0, 0, 0, 0},
     //    {"sort", sortCommand, -2, "wm", 0, sortGetKeys, 1, 1, 1, 0, 0},
@@ -730,6 +730,11 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
   }
 
+  // 复制函数
+  run_with_period(1000) replicationCron();
+
+  server.cronloops++;
+
   return 1000/server.hz;
 }
 
@@ -883,6 +888,8 @@ void initServerConfig() {
   server.zset_max_ziplist_value = REDIS_ZSET_MAX_ZIPLIST_VALUE;
   server.hll_sparse_max_bytes = REDIS_DEFAULT_HLL_SPARSE_MAX_BYTES;
   server.shutdown_asap = 0;
+  server.repl_timeout = REDIS_REPL_TIMEOUT;
+
 
   server.lruclock = getLRUClock();
   resetServerSaveParams();
@@ -986,6 +993,15 @@ void initServer() {
     server.current_client = NULL;
     server.clients = listCreate();
     server.clients_to_close = listCreate();
+    server.slaves = listCreate();
+    server.monitors = listCreate();
+    server.slaveseldb = -1; /* Force to emit the first SELECT command. */
+    //server.unblocked_clients = listCreate();
+    //server.ready_keys = listCreate();
+    //server.clients_waiting_acks = listCreate();
+    //server.get_ack_from_slaves = 0;
+    //server.clients_paused = 0;
+
     // TODO
 
     // 创建共享对象
@@ -1017,6 +1033,7 @@ void initServer() {
       server.db[j].avg_ttl = 0;
     }
 
+    server.cronloops = 0;
     server.rdb_child_pid = -1;
     server.aof_child_pid = -1;
 
@@ -1213,15 +1230,9 @@ void closeListeningSockets(int unlink_unix_socket) {
 
 /* ================================ Commands ================================  */
 
-void pingCommand(redisClient *c) {
-  // TODO
-  printf("PONG\n");
-}
+void pingCommand(redisClient *c) { addReply(c, shared.pong); }
 
-void echoCommand(redisClient *c) {
-  // TODO
-}
-
+void echoCommand(redisClient *c) { addReplyBulk(c, c->argv[1]); }
 
 // 根据 redis.c 文件顶部的命令列表，创建命令表
 void populateCommandTable(void) {

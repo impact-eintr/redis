@@ -230,6 +230,8 @@
 #define REDIS_CALL_FULL                                                        \
   (REDIS_CALL_SLOWLOG | REDIS_CALL_STATS | REDIS_CALL_PROPAGATE)
 
+#define run_with_period(_ms_) if ((_ms_ <= 1000/server.hz) || !(server.cronloops%((_ms_)/(1000/server.hz))))
+
 #define REDIS_LRU_BITS 24
 #define REDIS_LRU_CLOCK_MAX ((1<<REDIS_LRU_BITS)-1) // Max value of obj->lru
 #define REDIS_LRU_CLOCK_RESOLUTION 1000
@@ -502,6 +504,8 @@ struct redisServer
   int activerehashing; // databaseCron进行渐进式Rehash
 
   char *pidfile; // pid文件
+
+  int cronloops; // serverCron() 函数运行次数计数器
 
   char runid[REDIS_RUN_ID_SIZE+1];
 
@@ -857,6 +861,31 @@ void exitFromChild(int retcode);
 size_t redisPopcount(void *s, long count);
 void redisSetProcTitle(char *title);
 
+// synchronous I/O with timeout
+ssize_t syncWrite(int fd, char *ptr, ssize_t size, long long timeout);
+ssize_t syncRead(int fd, char *ptr, ssize_t size, long long timeout);
+ssize_t syncReadLine(int fd, char *ptr, ssize_t size, long long timeout);
+
+/* Replication */
+void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc);
+void replicationFeedMonitors(redisClient *c, list *monitors, int dictid, robj **argv, int argc);
+void updateSlavesWaitingBgsave(int bgsaveerr);
+void replicationCron(void);
+void replicationHandleMasterDisconnection(void);
+void replicationCacheMaster(redisClient *c);
+void resizeReplicationBacklog(long long newsize);
+void replicationSetMaster(char *ip, int port);
+void replicationUnsetMaster(void);
+void refreshGoodSlavesCount(void);
+void replicationScriptCacheInit(void);
+void replicationScriptCacheFlush(void);
+void replicationScriptCacheAdd(sds sha1);
+int replicationScriptCacheExists(sds sha1);
+void processClientsWaitingReplicas(void);
+void unblockClientWaitingReplicas(redisClient *c);
+int replicationCountAcksByOffset(long long offset);
+void replicationSendNewlineToMaster(void);
+long long replicationGetSlaveOffset(void);
 
 // 开区间 闭区间
 typedef struct

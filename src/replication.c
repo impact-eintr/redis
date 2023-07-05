@@ -1,7 +1,13 @@
 #include "adlist.h"
+#include "ae.h"
+#include "anet.h"
 #include "redis.h"
 #include "sds.h"
 #include "zmalloc.h"
+#include <stdarg.h>
+#include <sys/socket.h>
+#include <errno.h>
+#include <time.h>
 
 void disconnectSlaves(void) {
   while (listLength(server.slaves)) {
@@ -121,7 +127,7 @@ void slaveofCommand(redisClient *c) {
 }
 
 // 尝试进行部分 resync 成功返回 REDIS_OK 失败返回 REDIS_ERR
-int masterTryPartialResyncChronization(redisClient *c) {
+int masterTryPartialResynchronization(redisClient *c) {
   long long psync_offset, psync_len;
   char *master_runid = c->argv[1]->ptr;
   char buf[128];
@@ -213,4 +219,220 @@ void syncCommand(redisClient *c) {
   }
 
   return;
+}
+
+// Redis 通常情况下是将命令的发送和回复用不同的事件处理器来异步处理的
+// 但这里是同步地发送然后读取
+char *sendSynchronousCommand(int fd, ...) {
+  va_list ap;
+  sds cmd = sdsempty();
+  char *arg, buf[256];
+
+  /* Create the command to send to the master, we use simple inline
+   * protocol for simplicity as currently we only send simple strings. */
+  va_start(ap, fd);
+  while (1) {
+    printf("test\n");
+    arg = va_arg(ap, char *);
+    if (arg == NULL)
+      break;
+
+    printf("读取%s\n", arg);
+
+    if (sdslen(cmd) != 0) {
+      cmd = sdscatlen(cmd, " ", 1);
+    }
+    cmd = sdscat(cmd, arg);
+  }
+  va_end(ap);
+  cmd = sdscatlen(cmd, "\r\n", 2);
+
+  /* Transfer command to the server. */
+  // 发送命令到主服务器
+  if (syncWrite(fd, cmd, sdslen(cmd), server.repl_syncio_timeout * 1000) ==
+      -1) {
+    sdsfree(cmd);
+    return sdscatprintf(sdsempty(), "-Writing to master: %s", strerror(errno));
+  }
+  sdsfree(cmd);
+
+  /* Read the reply from the server. */
+  // 从主服务器中读取回复
+  if (syncReadLine(fd, buf, sizeof(buf), server.repl_syncio_timeout * 1000) ==
+      -1) {
+    return sdscatprintf(sdsempty(), "-Reading from master: %s",
+                        strerror(errno));
+  }
+  return sdsnew(buf);
+}
+
+void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
+  char tmpfile[256], *err;
+  int dfd, maxtries = 5;
+  int sockerr = 0, psync_result;
+  socklen_t errlen = sizeof(sockerr);
+  REDIS_NOTUSED(el);
+  REDIS_NOTUSED(privdata);
+  REDIS_NOTUSED(mask);
+
+  // 如果处于 SLAVEOF NO ONE 模式 那么关闭 fd
+  if (server.repl_state == REDIS_REPL_NONE) {
+    close(fd);
+    return;
+  }
+
+  // 检查套接字错误
+  if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockerr, &errlen) == -1) {
+    sockerr = errno;
+  }
+  if (sockerr) {
+    aeDeleteFileEvent(server.el, fd, AE_READABLE|AE_WRITABLE);
+    redisLog(REDIS_WARNING, "Error condition on socket for SYNC: %s", strerror(sockerr));
+    goto error;
+  }
+
+  switch (server.repl_state) {
+  case REDIS_REPL_CONNECTING:
+    redisLog(REDIS_NOTICE, "Non blocking connect for SYNC fired the event.");
+    aeDeleteFileEvent(server.el, fd,
+                      AE_WRITABLE); // 手动发送一个同步 PING 暂时取消写事件
+    server.repl_state = REDIS_REPL_RECEIVE_PONG; // 更新状态
+    syncWrite(fd, "PING\r\n", 6, 100);
+    return;
+
+  case REDIS_REPL_RECEIVE_PONG:
+    aeDeleteFileEvent(server.el, fd, AE_READABLE);
+    char buf[1024];
+    buf[0] = 0;
+    if (syncReadLine(fd, buf, sizeof(buf), server.repl_syncio_timeout * 1000) == -1) {
+      redisLog(REDIS_WARNING, "I/O error reading PING reply from master: %s",
+               strerror(errno));
+      goto error;
+    }
+
+    if (buf[0] != '+' && strncmp(buf, "-NOAUTH", 7) != 0 &&
+        strncmp(buf, "-ERR operation not permitted", 28) != 0) {
+      // 接收到未验证错误
+      redisLog(REDIS_WARNING, "Error reply to PING from master: '%s'", buf);
+      goto error;
+    } else {
+      // 接收到 PONG
+      redisLog(REDIS_NOTICE,
+               "Master replied to PING, replication can continue...");
+    }
+    break;
+
+  default:
+    break;
+  }
+
+  // 接收PONG 命令
+  if (server.masterauth) {
+    // TODO 验证身份
+  }
+
+  {
+    // 给master添加 slave 的 port
+    sds port = sdsfromlonglong(server.port);
+    err = sendSynchronousCommand(fd, "REPLCONF", "listening-port", port);
+    sdsfree(port);
+    /* Ignore the error if any, not all the Redis versions support
+     * REPLCONF listening-port. */
+    if (err[0] == '-') {
+      redisLog(REDIS_NOTICE,
+               "(Non critical) Master does not understand REPLCONF "
+               "listening-port: %s",
+               err);
+    }
+    sdsfree(err);
+  }
+
+  // 执行resync 或者 full-resync
+
+
+
+  return;
+
+error:
+  close(fd);
+  server.repl_transfer_s = -1;
+  server.repl_state = REDIS_REPL_CONNECT;
+  return;
+}
+
+// 以非阻塞的方式连接主服务器
+int connectWithMaster() {
+  int fd;
+  fd = anetTcpNonBlockConnect(NULL, server.masterhost, server.masterport);
+  if (fd == -1) {
+    redisLog(REDIS_WARNING, "Unable to connect to MASTER: %s", strerror(errno));
+    return REDIS_ERR;
+  }
+
+  // 监听主服务器 fd 的 读写事件
+  if (aeCreateFileEvent(server.el, fd, AE_READABLE | AE_WRITABLE,
+                        syncWithMaster, NULL) == AE_ERR) {
+    close(fd);
+    redisLog(REDIS_WARNING, "Unable to connect to MASTER: %s", strerror(errno));
+    return REDIS_ERR;
+  }
+
+  // 初始化统计变量
+  server.repl_transfer_lastio = server.unixtime;
+  server.repl_transfer_s = fd;
+  server.repl_state = REDIS_REPL_CONNECTING;
+  return REDIS_OK;
+}
+
+void replconfCommand(redisClient *c) {
+  int j;
+
+  if ((c->argc % 2) == 0) {
+    addReply(c, shared.syntaxerr);
+    return;
+  }
+
+  for (j = 1; j < c->argc; j+=2) {
+    if (!strcasecmp(c->argv[j]->ptr, "listening-port")) {
+      // 从服务器发来 REPLCONF listening-port <port> 命令
+      // master 将 slave 的 port 记录下来
+      long port;
+      if ((getLongFromObjectOrReply(c, c->argv[j+1], &port, NULL) != REDIS_OK)) {
+        return;
+      }
+      c->slave_listening_port = port;
+      redisLog(REDIS_NOTICE, "SLAVE_LISTENING_PORT: %d", c->slave_listening_port);
+    } else if (!strcasecmp(c->argv[j]->ptr, "ack")) {
+      // TODO
+
+    } else if (!strcasecmp(c->argv[j]->ptr, "getack")) {
+      // TODO
+
+    } else {
+      // TODO
+
+      return;
+    }
+  }
+
+  addReply(c, shared.ok);
+}
+
+void replicationCron(void) {
+  if (server.masterhost &&
+      (server.repl_state == REDIS_REPL_CONNECTING ||
+       server.repl_state == REDIS_REPL_RECEIVE_PONG) &&
+      (time(NULL) - server.repl_transfer_lastio) > server.repl_timeout) {
+    redisLog(REDIS_WARNING, "Timeout connecting to the MASTER");
+    // TODO 取消连接
+    printf("连接中\n");
+  }
+
+  if (server.repl_state == REDIS_REPL_CONNECT) {
+    redisLog(REDIS_NOTICE, "Connecting to the MASTER %s:%d", server.masterhost,
+             server.masterport);
+    if (connectWithMaster() == REDIS_OK) {
+      redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync started");
+    }
+  }
 }

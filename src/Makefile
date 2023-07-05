@@ -21,7 +21,7 @@ CONFIG = config.c
 DATASTRUCT = object.c dict.c sds.c ziplist.c adlist.c t_string.c t_list.c t_hash.c t_zset.c
 PERSISTENCE = rio.c rdb.c
 
-NETWORK = networking.c  anet.c
+NETWORK = networking.c  anet.c syncio.c
 
 REPLICATION = replication.c
 UTILS = endianconv.c util.c debug.c memtest.c
@@ -29,7 +29,7 @@ OTHER = multi.c
 
 ALL:redis
 
-slave:redis
+slave:clean redis
 	./redis slave.ini
 
 master:clean redis
