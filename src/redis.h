@@ -188,6 +188,11 @@
 #define REDIS_REPL_TRANSFER 4 /* Receiving .rdb from master */
 #define REDIS_REPL_CONNECTED 5 /* Connected to master */
 
+#define REDIS_REPL_WAIT_BGSAVE_START 6
+#define REDIS_REPL_WAIT_BGSAVE_END   7
+#define REDIS_REPL_SEND_BULK         8
+#define REDIS_REPL_ONLINE            9
+
 /* List related stuff */
 #define REDIS_HEAD 0
 #define REDIS_TAIL 1

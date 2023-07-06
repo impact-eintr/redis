@@ -9,12 +9,12 @@
 #include "util.h"
 #include "zmalloc.h"
 
-#include <asm-generic/errno-base.h>
 #include <errno.h>
-#include <string.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/syslog.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 
 struct sharedObjectsStruct shared;
 
@@ -722,6 +722,18 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
   clientCron();
 
   databasesCron();
+
+  if (server.rdb_child_pid != -1 || server.aof_child_pid != -1) {
+    int statloc;
+    pid_t pid;
+
+    // 接收子进程发来的信号 非阻塞
+    if ((pid = wait3(&statloc, WNOHANG, NULL)) != 0) {
+
+    }
+  } else {
+    // TODO 检查是否需要执行 BGSAVE
+  }
 
   // TODO 执行 AOF
   if (server.rdb_child_pid != -1 && server.aof_child_pid != -1) {

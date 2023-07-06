@@ -4,10 +4,55 @@
 #include "redis.h"
 #include "sds.h"
 #include "zmalloc.h"
+#include "rdb.h"
 #include <stdarg.h>
 #include <sys/socket.h>
 #include <errno.h>
 #include <time.h>
+
+/*
+** host1 (master)
+** host2 (slave)
+**
+** STAGE 1
+** cli -slaveof host1-> host2
+** host2.slaveCommand 处理 设置repl_state 为 REDIS_CONNECT
+** host2.replicationCron 每秒执行一次 检测到 repl_state 变更为 REDIS_CONNECT 调用connectWithMaster 尝试连接 host1(master)
+** connectWithMaster 设置repl_state 为 REDIS_CONNECTING 并与 master 建立非阻塞连接 异步地调用 syncWithMaster (读写事件处理器监听)
+** syncWithMaster 向master发送一条 PING 设置repl_state 为 REDIS_REPL_RECEIVE_PONG
+**
+** STAGE 2
+** master 收到一条 PING 回复一个 PONG
+** slave.syncWithMaster 收到读事件读取 PONG 执行REDIS_REPL_RECEIVE_PONG的分支
+** slave 向 master 发送 REPLCONF listening-port
+**
+** STAGE 3
+** master 执行 replconfCommand 记录slave的 port 并回复ok
+** slave 收到ok 执行 PSYNC 指令
+**
+** STAGE 3.1
+** slave 没有缓存master 执行全同步
+**
+** STAGE 3.1
+** slave 缓存了master 执行部分同步
+**
+**
+**
+**
+**
+**
+**
+*/
+
+// 创建backlog
+void createReplicationBacklog(void) {
+  redisAssert(server.repl_backlog == NULL);
+  server.repl_backlog = zmalloc(server.repl_backlog_size);
+  server.repl_backlog_histlen = 0;
+  server.repl_backlog_idx = 0;
+  server.master_repl_offset++;
+  server.repl_backlog_off = server.master_repl_offset+1;
+}
 
 void disconnectSlaves(void) {
   while (listLength(server.slaves)) {
@@ -200,11 +245,56 @@ void syncCommand(redisClient *c) {
     }
 
   } else {
-    //c->flags |= REDIS_PER_PSYNC;
+    c->flags |= REDIS_PRE_PSYNC;
   }
 
-  if (server.rdb_child_pid != -1) {
+  server.stat_sync_full++;
 
+  // 检查是否有 BGSAVE 在执行
+  if (server.rdb_child_pid != -1) {
+    redisClient *slave;
+    listNode *ln;
+    listIter li;
+
+    // 如果有至少一个 slave 在等待这个 BGSAVE 完成
+    // 那么说明正在进行的 BGSAVE 所产生的 RDB 也可以为其他 slave 所用
+    listRewind(server.slaves, &li);
+    while ((ln = listNext(&li))) {
+      slave = ln->value;
+      if (slave->replstate == REDIS_REPL_WAIT_BGSAVE_END)
+        break;
+    }
+
+    if (ln) {
+      // 幸运的情况，可以使用目前 BGSAVE 所生成的 RDB
+      copyClientOutputBuffer(c, slave);
+      c->replstate = REDIS_REPL_WAIT_BGSAVE_END;
+      redisLog(REDIS_NOTICE, "Waiting for end of BGSAVE for SYNC");
+    } else {
+      /* No way, we need to wait for the next BGSAVE in order to
+       * register differences */
+      // 不好运的情况，必须等待下个 BGSAVE
+      c->replstate = REDIS_REPL_WAIT_BGSAVE_START;
+      redisLog(REDIS_NOTICE, "Waiting for next BGSAVE for SYNC");
+    }
+
+  } else {
+    // 没有 BGSAVE 在进行，开始一个新的 BGSAVE
+    redisLog(REDIS_NOTICE, "Starting BGSAVE for SYNC");
+    if (rdbSaveBackground(server.rdb_filename) != REDIS_OK) {
+      redisLog(REDIS_NOTICE, "Replication failed, can't BGSAVE");
+      addReplyError(c, "Unable to perform background save");
+      return;
+    }
+    // 设置状态
+    c->replstate = REDIS_REPL_WAIT_BGSAVE_END;
+    /* Flush the script cache for the new slave. */
+    // 因为新 slave 进入，刷新复制脚本缓存
+    // TODO replicationScriptCacheFlush();
+  }
+
+  if (server.repl_disable_tcp_nodelay) {
+    anetDisableTcpNoDelay(NULL, c->fd);
   }
 
   c->repldbfd = -1;
@@ -213,9 +303,11 @@ void syncCommand(redisClient *c) {
 
   server.slaveseldb = -1;
 
+  // 添加到 slave 列表中
   listAddNodeTail(server.slaves, c);
   if (listLength(server.slaves) == 1 && server.repl_backlog == NULL) {
-    // TODO 初始化backlog
+    // 初始化backlog
+    createReplicationBacklog();
   }
 
   return;
@@ -232,12 +324,9 @@ char *sendSynchronousCommand(int fd, ...) {
    * protocol for simplicity as currently we only send simple strings. */
   va_start(ap, fd);
   while (1) {
-    printf("test\n");
     arg = va_arg(ap, char *);
     if (arg == NULL)
       break;
-
-    printf("读取%s\n", arg);
 
     if (sdslen(cmd) != 0) {
       cmd = sdscatlen(cmd, " ", 1);
@@ -264,6 +353,57 @@ char *sendSynchronousCommand(int fd, ...) {
                         strerror(errno));
   }
   return sdsnew(buf);
+}
+
+#define PSYNC_CONTINUE 0
+#define PSYNC_FULLRESYNC 1
+#define PSYNC_NOT_SUPPORTED 2
+// slave 尝试同步 master
+int slaveTryPartialResynchronization(int fd) {
+  char *psync_runid;
+  char psync_offset[32];
+  sds reply;
+
+  server.repl_master_initial_offset = -1;
+
+  if (server.cached_master) { // cache hit
+    // 发送 "PSYNC <master_run_id> <repl_offset>"
+    psync_runid = server.cached_master->replrunid;
+    snprintf(psync_offset, sizeof(psync_offset), "%lld",
+             server.cached_master->reploff + 1);
+    redisLog(REDIS_NOTICE,
+             "Trying a partial resynchronization (request %s:%s).", psync_runid,
+             psync_offset);
+  } else { // cache miss
+    // 发送 "PSYNC ? -1" 要求完整同步
+    redisLog(REDIS_NOTICE, "Partial resynchtonization (request %s:%s).", psync_runid, psync_offset);
+    psync_runid = "?";
+    memcpy(psync_offset, "-1", 3);
+  }
+
+  reply = sendSynchronousCommand(fd, "PSYNC", psync_runid, psync_offset);
+
+  // 接收到 FULLRESYNC ，进行 full-resync
+  if (!strncmp(reply, "+FULLRESYNC", 11)) {
+  }
+
+  // 接收到 CONTINUE ，进行 partial resync
+  if (!strncmp(reply, "+CONTINUE", 9)) {
+  }
+
+  /* If we reach this point we receied either an error since the master does
+   * not understand PSYNC, or an unexpected reply from the master.
+   * Return PSYNC_NOT_SUPPORTED to the caller in both cases. */
+
+  // 接收到错误？
+  if (strncmp(reply, "-ERR", 4)) {
+  }
+  sdsfree(reply);
+  replicationDiscardCachedMaster();
+
+  // 主服务器不支持 PSYNC
+  return PSYNC_NOT_SUPPORTED;
+
 }
 
 void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -347,8 +487,8 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
     sdsfree(err);
   }
 
-  // 执行resync 或者 full-resync
-
+  // TODO 接着写这里 执行resync 或者 full-resync
+  psync_result = slaveTryPartialResynchronization(fd);
 
 
   return;
@@ -425,7 +565,7 @@ void replicationCron(void) {
       (time(NULL) - server.repl_transfer_lastio) > server.repl_timeout) {
     redisLog(REDIS_WARNING, "Timeout connecting to the MASTER");
     // TODO 取消连接
-    printf("连接中\n");
+    printf("取消连接\n");
   }
 
   if (server.repl_state == REDIS_REPL_CONNECT) {
