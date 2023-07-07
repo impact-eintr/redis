@@ -393,8 +393,16 @@ void addReply(redisClient *c, robj *obj) {
 
 void *addDeferredMultiBulkLength(redisClient *c);
 void setDeferredMultiBulkLength(redisClient *c, void *node, long length);
-void addReplySds(redisClient *c, sds s);
-void processInputBuffer(redisClient *c);
+
+void copyClientOutputBuffer(redisClient *dst, redisClient *src) {
+  listRelease(dst->reply);
+  dst->reply = listDup(src->reply);
+  memcpy(dst->buf, src->buf, src->bufpos);
+
+  // 同步偏移量和字节数
+  dst->bufpos = src->bufpos;
+  dst->reply_bytes = src->reply_bytes;
+}
 
 #define MAX_ACCEPTS_PER_CALL 1000
 static void acceptCommonHandler(int fd, int flags) {

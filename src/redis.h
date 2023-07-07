@@ -192,6 +192,7 @@
 #define REDIS_REPL_WAIT_BGSAVE_END   7
 #define REDIS_REPL_SEND_BULK         8
 #define REDIS_REPL_ONLINE            9
+#define REDIS_REPL_SYNCIO_TIMEOUT 5
 
 /* List related stuff */
 #define REDIS_HEAD 0

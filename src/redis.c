@@ -727,9 +727,27 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     int statloc;
     pid_t pid;
 
-    // 接收子进程发来的信号 非阻塞
+    // 接收子进程发来的信号，非阻塞
     if ((pid = wait3(&statloc, WNOHANG, NULL)) != 0) {
+      int exitcode = WEXITSTATUS(statloc);
+      int bysignal = 0;
 
+      if (WIFSIGNALED(statloc))
+        bysignal = WTERMSIG(statloc);
+
+      // BGSAVE 执行完毕
+      if (pid == server.rdb_child_pid) {
+        backgroundSaveDoneHandler(exitcode, bysignal);
+
+        // BGREWRITEAOF 执行完毕
+      } else if (pid == server.aof_child_pid) {
+        // TODO backgroundRewriteDoneHandler(exitcode, bysignal);
+
+      } else {
+        redisLog(REDIS_WARNING,
+                 "Warning, detected child with unmatched pid: %ld", (long)pid);
+      }
+      updateDictResizePolicy();
     }
   } else {
     // TODO 检查是否需要执行 BGSAVE
@@ -911,7 +929,15 @@ void initServerConfig() {
   server.masterhost = NULL;
   server.masterport = 6379;
   server.master = NULL;
-
+  server.cached_master = NULL;
+  server.repl_master_initial_offset = -1;
+  server.repl_state = REDIS_REPL_NONE;
+  server.repl_syncio_timeout = REDIS_REPL_SYNCIO_TIMEOUT;
+  server.repl_serve_stale_data = REDIS_DEFAULT_SLAVE_SERVE_STALE_DATA;
+  server.repl_slave_ro = REDIS_DEFAULT_SLAVE_READ_ONLY;
+  server.repl_down_since = 0; /* Never connected, repl is down since EVER. */
+  server.repl_disable_tcp_nodelay = REDIS_DEFAULT_REPL_DISABLE_TCP_NODELAY;
+  server.slave_priority = REDIS_DEFAULT_SLAVE_PRIORITY;
   server.master_repl_offset = 0;
 
   server.commands = dictCreate(&commandTableDictType, NULL);
@@ -1048,6 +1074,11 @@ void initServer() {
     server.cronloops = 0;
     server.rdb_child_pid = -1;
     server.aof_child_pid = -1;
+    server.lastsave = time(NULL);
+    server.lastbgsave_try = 0;
+    server.rdb_save_time_last = -1;
+    server.rdb_save_time_start = -1;
+    server.dirty = 0;
 
     // 为 serverCron() 创建时间事件
     if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {

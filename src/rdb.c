@@ -432,10 +432,37 @@ void rdbRemoveTempFile(pid_t childpid) {
   unlink(tmpfile);
 }
 
-
-
 void backgroundSaveDoneHandler(int exitcode, int bysignal) {
+  // BGSAVE 成功
+  if (!bysignal && exitcode == 0) {
+    redisLog(REDIS_NOTICE, "Background saving terminated with success");
+    server.dirty = server.dirty - server.dirty_before_bgsave;
+    server.lastsave = time(NULL);
+    server.lastbgsave_status = REDIS_OK;
 
+    // BGSAVE 出错
+  } else if (!bysignal && exitcode != 0) {
+    redisLog(REDIS_WARNING, "Background saving error");
+    server.lastbgsave_status = REDIS_ERR;
+
+    // BGSAVE 被中断
+  } else {
+    redisLog(REDIS_WARNING, "Background saving terminated by signal %d",
+             bysignal);
+    // 移除临时文件
+    rdbRemoveTempFile(server.rdb_child_pid);
+    /* SIGUSR1 is whitelisted, so we have a way to kill a child without
+     * tirggering an error conditon. */
+    if (bysignal != SIGUSR1)
+      server.lastbgsave_status = REDIS_ERR;
+  }
+
+  // 更新服务器状态
+  server.rdb_child_pid = -1;
+  server.rdb_save_time_last = time(NULL)-server.rdb_save_time_start;
+  server.rdb_save_time_start = -1;
+  // NOTE 处理那些等待RDB的slave
+  updateSlavesWaitingBgsave(exitcode == 0 ? REDIS_OK : REDIS_ERR);
 }
 
 // 对于字符串 使用 [len][data] 保存

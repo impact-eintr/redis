@@ -689,6 +689,9 @@ void sdstoupper(sds s)
 
 sds sdsfromlonglong(long long value)
 {
+  char buf[SDS_LLSTR_SIZE];
+  int len = sdsll2str(buf, value);
+  return sdsnewlen(buf, len);
 }
 
 sds sdscatrepr(sds s, const char *p, size_t len)

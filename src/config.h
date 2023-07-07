@@ -3,7 +3,10 @@
 
 #ifdef __APPLE__
 #include <AvailabilityMacros.h>
+#else
+#include <sys/stat.h>
 #endif
+
 
 /* Define redis_fstat to fstat or fstat64() */
 #if defined(__APPLE__) && !defined(MAC_OS_X_VERSION_10_6)
