@@ -238,6 +238,7 @@ void freeClient(redisClient *c) {
   // TODO 退订所有频道和模式
 
 
+  // 取消所有读写事件
   if (c->fd != -1) {
     aeDeleteFileEvent(server.el, c->fd, AE_READABLE);
     aeDeleteFileEvent(server.el, c->fd, AE_WRITABLE);
@@ -641,7 +642,7 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     printf("处理客户端请求 %s\n", s);
 
     sdsIncrLen(c->querybuf, nread);
-    // TODO c->lastinteraction = server.unixtime;
+    c->lastinteraction = server.unixtime;
     // TODO 处理master 更新复制偏移量
   } else {
     server.current_client = NULL;

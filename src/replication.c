@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -242,6 +243,7 @@ void syncCommand(redisClient *c) {
     } else {
       // 不可执行 PSYNC
       char *master_runid = c->argv[1]->ptr;
+      printf("不可执行 PSYNC: %s\n", master_runid);
 
       /* Increment stats for failed PSYNCs, but only if the
        * runid is not "?", as this is used by slaves to force a full
@@ -363,6 +365,37 @@ char *sendSynchronousCommand(int fd, ...) {
   return sdsnew(buf);
 }
 
+// 将缓存中的 master 设置为服务器当前的 master
+void replicationResurrectCachedMaster(int newfd) {
+  server.master = server.cached_master;
+  server.cached_master = NULL;
+  server.master->fd = newfd;
+  server.master->flags &= ~(REDIS_CLOSE_AFTER_REPLY | REDIS_CLOSE_ASAP);
+
+  server.repl_state = REDIS_REPL_CONNECTED;
+  listAddNodeTail(server.clients, server.master);
+  // 监听 Master 的读事件
+  if (aeCreateFileEvent(server.el, newfd, AE_READABLE, readQueryFromClient,
+                        server.master)) {
+    redisLog(REDIS_WARNING,
+             "Error resurrecting the cached master, impossible to add the "
+             "readable handler: %s",
+             strerror(errno));
+    freeClientAsync(server.master);
+  }
+  // 监听 Master 的写事件
+  if (server.master->bufpos || listLength(server.master->reply)) {
+    if (aeCreateFileEvent(server.el, newfd, AE_READABLE, readQueryFromClient,
+                          server.master)) {
+      redisLog(REDIS_WARNING,
+               "Error resurrecting the cached master, impossible to add the "
+               "writable handler: %s",
+               strerror(errno));
+      freeClientAsync(server.master);
+    }
+  }
+}
+
 #define PSYNC_CONTINUE 0
 #define PSYNC_FULLRESYNC 1
 #define PSYNC_NOT_SUPPORTED 2
@@ -395,10 +428,39 @@ int slaveTryPartialResynchronization(int fd) {
   if (!strncmp(reply, "+FULLRESYNC", 11)) {
     char *runid = NULL, *offset = NULL;
     runid = strchr(reply, ' ');
+    if (runid) {
+      runid++;
+      offset = strchr(runid, ' ');
+      if (offset) {
+        offset++;
+      }
+    }
+    if (!runid || !offset || (offset - runid - 1) != REDIS_RUN_ID_SIZE) {
+      // 主服务器支持 PSYNC 但是发来了异常的 run id
+      memset(server.repl_master_runid, 0, REDIS_RUN_ID_SIZE + 1);
+      redisLog(REDIS_WARNING, "Master replied with wrong +FULLRESYNC syntax");
+    } else {
+      // 保存 run id
+      memcpy(server.repl_master_runid, runid, offset - runid - 1);
+      server.repl_master_runid[REDIS_RUN_ID_SIZE] = '\0';
+      server.repl_master_initial_offset = strtoll(offset, NULL, 10);
+      // 打印日志，这是一个 FULL resync
+      redisLog(REDIS_NOTICE, "Full resync from master: %s:%lld",
+               server.repl_master_runid, server.repl_master_initial_offset);
+    }
+
+    replicationDiscardCachedMaster(); // 要开始完整重同步 缓存中的master没用了
+    sdsfree(reply);
+    return PSYNC_FULLRESYNC;
   }
 
   // 接收到 CONTINUE ，进行 partial resync
   if (!strncmp(reply, "+CONTINUE", 9)) {
+    redisLog(REDIS_NOTICE, "Successful partial resynchronization with master.");
+    sdsfree(reply);
+    // 将缓存中的master设置为当前的master
+    replicationResurrectCachedMaster(fd);
+    return PSYNC_CONTINUE;
   }
 
   /* If we reach this point we receied either an error since the master does
@@ -407,13 +469,20 @@ int slaveTryPartialResynchronization(int fd) {
 
   // 接收到错误？
   if (strncmp(reply, "-ERR", 4)) {
+    redisLog(REDIS_WARNING, "Unexpected reply to PSYNC from master: %s", reply);
+  } else {
+    redisLog(REDIS_NOTICE, "Master does not support PSYNC or is in error state (reply: %s)", reply);
   }
   sdsfree(reply);
   replicationDiscardCachedMaster();
 
   // 主服务器不支持 PSYNC
   return PSYNC_NOT_SUPPORTED;
+}
 
+void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
+  printf("读取数据 RDB\n");
+  sleep(1);
 }
 
 void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -497,9 +566,60 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
     sdsfree(err);
   }
 
-  // TODO 接着写这里 执行resync 或者 full-resync
-  printf("?????\n");
+  // 接着写这里 执行resync 或者 full-resync
   psync_result = slaveTryPartialResynchronization(fd);
+
+  if (psync_result == PSYNC_CONTINUE) {
+    redisLog(
+        REDIS_NOTICE,
+        "MASTER <-> SLAVE sync: Master accepted a Partial Resynchronization.");
+    // 返回
+    return;
+  }
+
+  if (psync_result == PSYNC_NOT_SUPPORTED) { // 不支持 PSYNC
+    redisLog(REDIS_NOTICE, "Retrying with SYNC...");
+    // 向主服务器发送 SYNC 命令
+    if (syncWrite(fd, "SYNC\r\n", 6, server.repl_syncio_timeout * 1000) == -1) {
+      redisLog(REDIS_WARNING, "I/O error writing to MASTER: %s",
+               strerror(errno));
+      goto error;
+    }
+  }
+
+  // 如果执行到这里 REDIS_FULLRESYNC or  PSYNC_NOT_SUPPORTED
+  while (maxtries--) { // 打开临时文件保存从主服务器下载的 RDB
+    snprintf(tmpfile, 256, "temp-%d.%ld.rdb", (int)server.unixtime,
+             (long int)getpid());
+    dfd = open(tmpfile, O_CREAT | O_WRONLY | O_EXCL, 0644);
+    if (dfd != -1)
+      break;
+    sleep(1);
+  }
+  if (dfd == -1) {
+    redisLog(
+        REDIS_WARNING,
+        "Opening the temp file needed for MASTER <-> SLAVE synchronization: %s",
+        strerror(errno));
+    goto error;
+  }
+
+  // 设置一个读事件处理器
+  if (aeCreateFileEvent(server.el, fd, AE_READABLE, readSyncBulkPayload, NULL)) {
+    redisLog(REDIS_WARNING, "Can't create readable event for SYNC: %s (fd=%d)",
+             strerror(errno), fd);
+    goto error;
+  }
+  // 设置状态
+  server.repl_state = REDIS_REPL_TRANSFER;
+
+  // 更新统计信息
+  server.repl_transfer_size = -1;
+  server.repl_transfer_read = 0;
+  //server.repl_transfer_last_fsync_off = 0;
+  server.repl_transfer_fd = dfd;
+  server.repl_transfer_lastio = server.unixtime;
+  server.repl_transfer_tmpfile = zstrdup(tmpfile);
 
   return;
 
@@ -576,11 +696,17 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
   char buf[REDIS_IOBUF_LEN];
   ssize_t nwritten, buflen;
 
+  if (slave->replpreamble) {
+    exit(1);
+  }
 
   lseek(slave->repldbfd, slave->repldboff, SEEK_SET);
   buflen = read(slave->repldbfd, buf, REDIS_IOBUF_LEN);
   if (buflen <= 0) {
-
+    redisLog(REDIS_WARNING, "Read error sending DB to slave: %s",
+             (buflen == 0) ? "premature EOF" : strerror(errno));
+    freeClient(slave);
+    return;
   }
 
   // 写入数据到slave
@@ -594,6 +720,14 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
 
   // 如果写入成功 南岸更新写入字节
   slave->repldboff += nwritten;
+
+  // 如果写入已经完成
+  if (slave->repldboff == slave->repldbsize) {
+    close(slave->repldbfd);
+    slave->repldbfd = -1;
+    aeDeleteFileEvent(server.el, slave->fd, AE_WRITABLE); // 写完了 取消写事件
+    printf("结束\n");
+  }
   sleep(1);
 }
 
