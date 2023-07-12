@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -482,7 +483,68 @@ int slaveTryPartialResynchronization(int fd) {
 
 void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
   printf("读取数据 RDB\n");
-  sleep(1);
+  char buf[4096];
+  ssize_t nread, readlen;
+  off_t left;
+  REDIS_NOTUSED(el);
+  REDIS_NOTUSED(privdata);
+  REDIS_NOTUSED(mask);
+
+  if (server.repl_transfer_size == -1) {
+    if (syncReadLine(fd, buf, 1024, server.repl_syncio_timeout * 1000) == -1) { // 读取首行 获取文件长度 期望 '$XXX'
+      redisLog(REDIS_WARNING, "I/O error reading bulk count from MASTER: %s",
+               strerror(errno));
+      goto error;
+    }
+
+    // 处理错误
+    if (buf[0] == '-') {
+      redisLog(REDIS_WARNING, "MASTER aborted replication with an error: %s", buf+1);
+      goto error;
+    } else if (buf[0] == '\0') {
+      // 直接收到了了一个同 PONG 的 \0 更新最后互动时间
+      server.repl_transfer_lastio = server.unixtime;
+      return;
+    } else if (buf[0] != '$') {
+      redisLog(REDIS_WARNING,
+               "Bad protocol from MASTER, the first byte is not '$' we "
+               "received '%s'",
+               buf);
+      goto error;
+    }
+    // 分析 RDB 文件大小
+    server.repl_transfer_size = strtol(buf + 1, NULL, 10);
+    redisLog(REDIS_NOTICE,
+             "MASTER<->SLAVE sync: recving %lld bytes from master",
+             (long long)server.repl_transfer_size);
+    return;
+  }
+  // 读取实际数据
+  left = server.repl_transfer_size - server.repl_transfer_read;
+  readlen = (left < (signed)sizeof(buf)) ? left : (signed)sizeof(buf);
+  nread = read(fd, buf, readlen);
+  if (nread <= 0) {
+    redisLog(REDIS_WARNING, "I/O error trying to sync with MASTER: %s",
+             (nread == -1) ? strerror(errno) : "connection lost");
+    //replicationAbortSyncTransfer();
+    return;
+  }
+
+  // 检查 RDB 是否已经传送完成
+  if (server.repl_transfer_read == server.repl_transfer_size) {
+    aeDeleteFileEvent(server.el, server.repl_transfer_s, AE_READABLE);
+    //if (rdbLoad(server.rdb_filename) != REDIS_OK) {
+
+    //  return;
+    //}
+    redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync RDB finish");
+  }
+
+  return;
+
+error:
+  //replicationAbortSyncTransfer();
+  return;
 }
 
 void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
@@ -689,7 +751,6 @@ void replconfCommand(redisClient *c) {
 }
 
 void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
-  printf("向slave写数据\n");
   redisClient *slave = privdata;
   REDIS_NOTUSED(el);
   REDIS_NOTUSED(mask);
@@ -701,34 +762,44 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
   }
 
   lseek(slave->repldbfd, slave->repldboff, SEEK_SET);
-  buflen = read(slave->repldbfd, buf, REDIS_IOBUF_LEN);
+  buflen = read(slave->repldbfd, buf, REDIS_IOBUF_LEN); // 读RDB文件
   if (buflen <= 0) {
     redisLog(REDIS_WARNING, "Read error sending DB to slave: %s",
              (buflen == 0) ? "premature EOF" : strerror(errno));
-    freeClient(slave);
+    freeClient(slave); // 断开与slave的连接
     return;
   }
 
-  // 写入数据到slave
+  // 写入RDB数据到slave
   if ((nwritten = write(fd, buf, buflen)) == -1) {
     if (errno != EAGAIN) {
       redisLog(REDIS_WARNING, "Write error sending DB to slave: %s", strerror(errno));
-      freeClient(slave);
+      freeClient(slave); // 断开与slave的连接
     }
     return;
   }
 
-  // 如果写入成功 南岸更新写入字节
+  // 如果写入成功 那么更新写入字节
   slave->repldboff += nwritten;
 
   // 如果写入已经完成
   if (slave->repldboff == slave->repldbsize) {
     close(slave->repldbfd);
     slave->repldbfd = -1;
-    aeDeleteFileEvent(server.el, slave->fd, AE_WRITABLE); // 写完了 取消写事件
-    printf("结束\n");
+    aeDeleteFileEvent(server.el, slave->fd, AE_WRITABLE); // 写完了 取消发送RDB的写事件
+    server.repl_state = REDIS_REPL_ONLINE;
+    // 更新响应时间
+    slave->repl_ack_time = server.unixtime;
+    // 注册一个对齐同步期间写指令的写事件
+    if (aeCreateFileEvent(server.el, slave->fd, AE_WRITABLE, sendReplyToClient, slave) == REDIS_ERR) {
+      redisLog(REDIS_WARNING, "Unable to register writable event for slave bulk transfer: %s", strerror(errno));
+      freeClient(slave);
+      return;
+    }
+    // TODO 更新低延迟slave的统计值
+
+    redisLog(REDIS_NOTICE, "Synchronization with slave succeded");
   }
-  sleep(1);
 }
 
 void updateSlavesWaitingBgsave(int bgsaveerr) {
