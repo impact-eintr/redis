@@ -13,6 +13,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -480,9 +481,8 @@ int slaveTryPartialResynchronization(int fd) {
   // 主服务器不支持 PSYNC
   return PSYNC_NOT_SUPPORTED;
 }
-
+#define REPL_MAX_WRITTEN_BEFORE_FSYNC (1024*1024*8) /* 8 MB */
 void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
-  printf("读取数据 RDB\n");
   char buf[4096];
   ssize_t nread, readlen;
   off_t left;
@@ -528,6 +528,26 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
              (nread == -1) ? strerror(errno) : "connection lost");
     //replicationAbortSyncTransfer();
     return;
+  } else {
+  printf("读取数据 RDB: %ld bytes\n", nread);
+  }
+
+  server.repl_transfer_lastio = server.unixtime; // 跟新最后 RDB 产生的IO时间
+  if (write(server.repl_transfer_fd, buf, nread) != nread) {
+    redisLog(REDIS_WARNING, "Write error when slave save local temp rdb file: %s", strerror(errno));
+    goto error;
+  }
+  server.repl_transfer_read += nread;
+
+  // TODO 写到这里了 slave边接受数据边写盘
+  // 定期将读入的文件 fsync 到磁盘，以免 buffer 太多，一下子写入时撑爆 IO
+  if (server.repl_transfer_read >=
+      server.repl_transfer_last_fsync_off + REPL_MAX_WRITTEN_BEFORE_FSYNC) {
+  off_t sync_size =
+      server.repl_transfer_read - server.repl_transfer_last_fsync_off;
+  rdb_fsync_range(server.repl_transfer_fd, server.repl_transfer_last_fsync_off,
+                  sync_size);
+  server.repl_transfer_last_fsync_off += sync_size;
   }
 
   // 检查 RDB 是否已经传送完成
@@ -537,6 +557,7 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     //  return;
     //}
+    // TODO 清除数据库 载入RDB 完成同步
     redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync RDB finish");
   }
 
@@ -758,7 +779,20 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
   ssize_t nwritten, buflen;
 
   if (slave->replpreamble) {
-    exit(1);
+    nwritten = write(fd, slave->replpreamble, sdslen(slave->replpreamble));
+    if (nwritten == -1) {
+      redisLog(REDIS_VERBOSE, "Write error sending RDB preamble to slave: %s", strerror(errno));
+      freeClient(slave);
+      return;
+    }
+
+    sdsrange(slave->replpreamble, nwritten, -1);
+    if (sdslen(slave->replpreamble) == 0) {
+      sdsfree(slave->replpreamble);
+      slave->replpreamble = NULL;
+    } else {
+      return;
+    }
   }
 
   lseek(slave->repldbfd, slave->repldboff, SEEK_SET);
@@ -802,6 +836,7 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
   }
 }
 
+// 这个函数实在 BGSAVE 完成之后的异步回调函数 它指导该怎么执行和 slave 相关的 RDB 下一步工作
 void updateSlavesWaitingBgsave(int bgsaveerr) {
   listNode *ln;
   int startbgsave = 0;
@@ -833,6 +868,7 @@ void updateSlavesWaitingBgsave(int bgsaveerr) {
       slave->repldboff = 0;
       slave->repldbsize = buf.st_size;
       slave->replstate = REDIS_REPL_SEND_BULK; // 接收RDB文件中
+      slave->replpreamble = sdscatprintf(sdsempty(), "$%lld\r\n", (unsigned long long)slave->repldbsize);
       // 更新写事件处理器
       aeDeleteFileEvent(server.el, slave->fd, AE_WRITABLE);
       if (aeCreateFileEvent(server.el, slave->fd, AE_WRITABLE, sendBulkToSlave, slave) == AE_ERR) {
