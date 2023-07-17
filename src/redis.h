@@ -756,7 +756,7 @@ struct redisServer
   int repl_syncio_timeout; // IO 超时时间
   off_t repl_transfer_size; // RDB 文件的大小
   off_t repl_transfer_read;
-  off_t repl_transferlast_fsync_off;
+  off_t repl_transfer_last_fsync_off;
   // 主服务器的套接字
   int repl_transfer_s;     /* Slave -> Master SYNC socket */
   // 保存 RDB 文件的临时文件的描述符

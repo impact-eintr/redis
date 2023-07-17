@@ -74,6 +74,7 @@
 #endif
 
 #ifdef HAVE_SYNC_FILE_RANGE
+#include <fcntl.h>
 #define rdb_fsync_range(fd,off,size) sync_file_range(fd,off,size,SYNC_FILE_RANGE_WAIT_BEFORE|SYNC_FILE_RANGE_WRITE)
 #else
 #define rdb_fsync_range(fd,off,size) fsync(fd)

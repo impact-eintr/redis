@@ -33,7 +33,9 @@
 #define DEFAULT_SOURCE
 
 #if defined(__linux__)
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #endif
 
 #if defined(__linux__) || defined(__OpenBSD__)
@@ -46,7 +48,10 @@
 #define _XOPEN_SOURCE
 #endif
 
+
+#ifndef _LARGEFILE_SOURCE
 #define _LARGEFILE_SOURCE
+#endif
 #define _FILE_OFFSET_BITS 64
 
 #endif

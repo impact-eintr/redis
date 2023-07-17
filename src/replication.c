@@ -7,7 +7,7 @@
 #include "redis.h"
 #include "sds.h"
 #include "zmalloc.h"
-#include <asm-generic/errno-base.h>
+#include <errno.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -481,6 +481,19 @@ int slaveTryPartialResynchronization(int fd) {
   // 主服务器不支持 PSYNC
   return PSYNC_NOT_SUPPORTED;
 }
+
+void replicationSendNewlineToMaster() {
+  static time_t newline_sent;
+  if (time(NULL) != newline_sent) {
+    newline_sent = time(NULL);
+  }
+}
+
+void replicationEmptyDbCallback(void *privdata) {
+  REDIS_NOTUSED(privdata);
+  replicationSendNewlineToMaster();
+}
+
 #define REPL_MAX_WRITTEN_BEFORE_FSYNC (1024*1024*8) /* 8 MB */
 void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
   char buf[4096];
@@ -543,21 +556,29 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
   // 定期将读入的文件 fsync 到磁盘，以免 buffer 太多，一下子写入时撑爆 IO
   if (server.repl_transfer_read >=
       server.repl_transfer_last_fsync_off + REPL_MAX_WRITTEN_BEFORE_FSYNC) {
-  off_t sync_size =
-      server.repl_transfer_read - server.repl_transfer_last_fsync_off;
-  rdb_fsync_range(server.repl_transfer_fd, server.repl_transfer_last_fsync_off,
-                  sync_size);
-  server.repl_transfer_last_fsync_off += sync_size;
+    off_t sync_size =
+        server.repl_transfer_read - server.repl_transfer_last_fsync_off;
+    rdb_fsync_range(server.repl_transfer_fd,
+                    server.repl_transfer_last_fsync_off, sync_size);
+    server.repl_transfer_last_fsync_off += sync_size;
   }
 
   // 检查 RDB 是否已经传送完成
   if (server.repl_transfer_read == server.repl_transfer_size) {
+    if (rename(server.repl_transfer_tmpfile, server.rdb_filename) == -1) {
+      redisLog(REDIS_WARNING, "failed to rename the temp db file: %s", server.repl_transfer_tmpfile);
+      //replicationAbortSyncTransfer();
+      return;
+    }
+    // 先清空数据库
+    redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync: Flushing old date");
+    signalFlushedDb(-1);
+    emptyDb(replicationEmptyDbCallback);
     aeDeleteFileEvent(server.el, server.repl_transfer_s, AE_READABLE);
-    //if (rdbLoad(server.rdb_filename) != REDIS_OK) {
-
-    //  return;
-    //}
-    // TODO 清除数据库 载入RDB 完成同步
+    if (rdbLoad(server.rdb_filename) != REDIS_OK) {
+      redisLog(REDIS_WARNING, "FAILED trying to load the MASTER synchronization DB from disk");
+      return;
+    }
     redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync RDB finish");
   }
 
@@ -699,7 +720,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
   // 更新统计信息
   server.repl_transfer_size = -1;
   server.repl_transfer_read = 0;
-  //server.repl_transfer_last_fsync_off = 0;
+  server.repl_transfer_last_fsync_off = 0;
   server.repl_transfer_fd = dfd;
   server.repl_transfer_lastio = server.unixtime;
   server.repl_transfer_tmpfile = zstrdup(tmpfile);
