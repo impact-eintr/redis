@@ -64,6 +64,26 @@ void createReplicationBacklog(void) {
   server.repl_backlog_off = server.master_repl_offset+1;
 }
 
+
+
+
+// 将传入的参数发送给从服务器
+// 1) 构建协议内容
+// 2) 将协议内容备份到 backlog
+// 3) 将内容发送给各个从服务器
+void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
+  listNode *ln;
+  listIter *ln;
+  int j, len;
+  char Ilstr[REDIS_LONGSTR_SIZE];
+
+  if (server.repl_backlog == NULL && listLength(slaves) == 0) {
+    return;
+  }
+}
+
+
+
 void disconnectSlaves(void) {
   while (listLength(server.slaves)) {
     listNode *ln = listFirst(server.slaves);
@@ -482,10 +502,23 @@ int slaveTryPartialResynchronization(int fd) {
   return PSYNC_NOT_SUPPORTED;
 }
 
+void replicationAbortSyncTransfer(void) {
+  redisAssert(server.repl_state == REDIS_REPL_TRANSFER);
+  aeDeleteFileEvent(server.el, server.repl_transfer_s, AE_READABLE); // 停止从master读取数据
+  close(server.repl_transfer_s);
+  close(server.repl_transfer_fd);
+  unlink(server.repl_transfer_tmpfile);
+  zfree(server.repl_transfer_tmpfile);
+  server.repl_state = REDIS_REPL_CONNECT;
+}
+
 void replicationSendNewlineToMaster() {
   static time_t newline_sent;
   if (time(NULL) != newline_sent) {
     newline_sent = time(NULL);
+    if (write(server.repl_transfer_s, "\n", 1) == -1) {
+      // Ping back
+    }
   }
 }
 
@@ -539,7 +572,7 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
   if (nread <= 0) {
     redisLog(REDIS_WARNING, "I/O error trying to sync with MASTER: %s",
              (nread == -1) ? strerror(errno) : "connection lost");
-    //replicationAbortSyncTransfer();
+    replicationAbortSyncTransfer();
     return;
   } else {
   printf("读取数据 RDB: %ld bytes\n", nread);
@@ -567,7 +600,7 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
   if (server.repl_transfer_read == server.repl_transfer_size) {
     if (rename(server.repl_transfer_tmpfile, server.rdb_filename) == -1) {
       redisLog(REDIS_WARNING, "failed to rename the temp db file: %s", server.repl_transfer_tmpfile);
-      //replicationAbortSyncTransfer();
+      replicationAbortSyncTransfer();
       return;
     }
     // 先清空数据库
@@ -575,6 +608,7 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
     signalFlushedDb(-1);
     emptyDb(replicationEmptyDbCallback);
     aeDeleteFileEvent(server.el, server.repl_transfer_s, AE_READABLE);
+    printf("RDB LOADING\n");
     if (rdbLoad(server.rdb_filename) != REDIS_OK) {
       redisLog(REDIS_WARNING, "FAILED trying to load the MASTER synchronization DB from disk");
       return;
@@ -585,7 +619,7 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
   return;
 
 error:
-  //replicationAbortSyncTransfer();
+  replicationAbortSyncTransfer();
   return;
 }
 

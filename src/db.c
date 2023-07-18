@@ -230,7 +230,11 @@ int selectDb(redisClient *c, int id) {
 void signalModifiedKey(redisDb *db, robj *key) {
   // TODO
 }
-void signalFlushedDb(int dbid);
+
+void signalFlushedDb(int dbid) {
+  // TODO
+}
+
 unsigned int getKeysInSlot(unsigned int hashslot, robj **keys, unsigned int count);
 unsigned int countKeysInSlot(unsigned int hashslot);
 unsigned int delKeysInSlot(unsigned int hashslot);

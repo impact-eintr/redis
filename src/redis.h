@@ -227,6 +227,9 @@
 #define UNIT_SECONDS 0
 #define UNIT_MILLISECONDS 1
 
+#define REDIS_PROPAGATE_NONE 0
+#define REDIS_PROPAGATE_AOF 1
+#define REDIS_PROPAGATE_REPL 2
 
 // Command call flags see call() function
 #define REDIS_CALL_NONE 0

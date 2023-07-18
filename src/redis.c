@@ -1165,6 +1165,15 @@ int freeMemoryIfNeeded() {
   return 1;
 }
 
+void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc, int flags) {
+  // TODO 传播到 AOF
+
+  // 传播到 slave
+  if (flags & REDIS_PROPAGATE_REPL) {
+    replicationFeedSlaves(server.slaves, dbid, argv, argc);
+  }
+}
+
 // 调用命令的实现函数
 void call(redisClient *c, int flags) {
   // start 记录命令开始执行的时间
