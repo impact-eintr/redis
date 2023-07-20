@@ -6,11 +6,13 @@
 #include "rdb.h"
 #include "redis.h"
 #include "sds.h"
+#include "util.h"
 #include "zmalloc.h"
 #include <errno.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,10 +40,14 @@
 **
 ** STAGE 3
 ** master 执行 replconfCommand 记录slave的 port 并回复ok
-** slave 收到ok 执行 PSYNC 指令
+** slave 收到ok 执行 slaveTryPartialResynchronization
 **
 ** STAGE 3.1
-** slave 没有缓存master 执行全同步
+** slave 没有缓存master 调用sendSynchronousCommand 发送 "PSYNC ? -1" 要求完整同步
+** master syncCommand() 处理slave发送的 "PSYNC ? -1" 调用 masterTryPartialResynchronization 触发强制full replication
+** master 回复 slave  +FULLRESYNC %s %lld\r\n 并认定无法进行 PSYNC 检查
+** master 接着尝试开启 BGSAVE 并将当前连接的client认定为slave，添加到 slaves 中
+** master 的 sevrCron 会检查 BGSAVE 是否完成 如果 BGSAVE 已经完成 执行 updateSlavesWaitingBgsave
 **
 ** STAGE 3.1
 ** slave 缓存了master 执行部分同步
@@ -64,7 +70,51 @@ void createReplicationBacklog(void) {
   server.repl_backlog_off = server.master_repl_offset+1;
 }
 
+// 动态调整 backlog 大小
+// 当 backlog 是被扩大时，原有的数据会被保留，
+// 因为分配空间使用的是 realloc
+void resizeReplicationBacklog(long long newsize) {
 
+  // 不能小于最小大小
+  if (newsize < REDIS_REPL_BACKLOG_MIN_SIZE)
+    newsize = REDIS_REPL_BACKLOG_MIN_SIZE;
+
+  // 大小和目前大小相等
+  if (server.repl_backlog_size == newsize)
+    return;
+
+  // 设置新大小
+  server.repl_backlog_size = newsize;
+  if (server.repl_backlog != NULL) {
+    /* What we actually do is to flush the old buffer and realloc a new
+     * empty one. It will refill with new data incrementally.
+     * The reason is that copying a few gigabytes adds latency and even
+     * worse often we need to alloc additional space before freeing the
+     * old buffer. */
+    // 释放 backlog
+    zfree(server.repl_backlog);
+    // 按新大小创建新 backlog
+    server.repl_backlog = zmalloc(server.repl_backlog_size);
+    server.repl_backlog_histlen = 0;
+    server.repl_backlog_idx = 0;
+    /* Next byte we have is... the next since the buffer is emtpy. */
+    server.repl_backlog_off = server.master_repl_offset + 1;
+  }
+}
+
+void feedReplicationBacklog(void *ptr, size_t len) {
+  // TODO 存储backlog
+}
+
+void freeReplicationBacklog(void) {
+  redisAssert(listLength(server.slaves) == 0);
+  zfree(server.repl_backlog);
+  server.repl_backlog = NULL;
+}
+
+void feedReplicationBacklogWithObject(robj *o) {
+
+}
 
 
 // 将传入的参数发送给从服务器
@@ -73,12 +123,86 @@ void createReplicationBacklog(void) {
 // 3) 将内容发送给各个从服务器
 void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
   listNode *ln;
-  listIter *ln;
+  listIter li;
   int j, len;
-  char Ilstr[REDIS_LONGSTR_SIZE];
+  char llstr[REDIS_LONGSTR_SIZE];
 
   if (server.repl_backlog == NULL && listLength(slaves) == 0) {
     return;
+  }
+
+  redisAssert(!(listLength(slaves) != 0 && server.repl_backlog == NULL));
+
+  if (server.slaveseldb != dictid) {
+    robj *selectcmd;
+    if (dictid >= 0 && dictid < REDIS_SHARED_SELECT_CMDS) {
+      selectcmd = shared.select[dictid];
+    } else {
+      int dictid_len;
+
+      dictid_len = ll2string(llstr, sizeof(llstr), dictid);
+      selectcmd = createObject(
+          REDIS_STRING,
+          sdscatprintf(sdsempty(), "*2\r\n$6\r\nSELECT\r\n$%d\r\n%s\r\n",
+                       dictid_len, llstr));
+    }
+
+    if (server.repl_backlog) {
+      // 将SELECT添加到backlog中
+      feedReplicationBacklog(selectcmd, len);
+    }
+
+    listRewind(slaves, &li);
+    while ((ln = listNext(&li))) {
+      redisClient *slave = ln->value;
+      addReply(slave, selectcmd);
+    }
+    // 释放掉占用的内存
+    if (dictid < 0 || dictid >= REDIS_SHARED_SELECT_CMDS) {
+      decrRefCount(selectcmd);
+    }
+  }
+
+  server.slaveseldb = dictid;
+
+  if (server.repl_backlog) {
+    char aux[REDIS_LONGSTR_SIZE + 3];
+
+    /* Add the multi bulk reply length. */
+    aux[0] = '*';
+    len = ll2string(aux + 1, sizeof(aux) - 1, argc);
+    aux[len + 1] = '\r';
+    aux[len + 2] = '\n';
+    feedReplicationBacklog(aux, len + 3);
+
+    for (j = 0; j < argc; j++) {
+      long objlen = stringObjectLen(argv[j]);
+
+      /* We need to feed the buffer with the object as a bulk reply
+       * not just as a plain string, so create the $..CRLF payload len
+       * ad add the final CRLF */
+      // 将参数从对象转换成协议格式
+      aux[0] = '$';
+      len = ll2string(aux + 1, sizeof(aux) - 1, objlen);
+      aux[len + 1] = '\r';
+      aux[len + 2] = '\n';
+      feedReplicationBacklog(aux, len + 3);
+      feedReplicationBacklogWithObject(argv[j]);
+      feedReplicationBacklog(aux + len + 1, 2);
+    }
+  }
+
+  listRewind(slaves, &li);
+  while((ln = listNext(&li))) {
+    redisClient *slave = ln->value;
+    if (slave->replstate == REDIS_REPL_WAIT_BGSAVE_START) {
+      continue; // 不要给正在等待 BGSAVE 的slave发送命令
+    }
+
+    addReplyMultiBulkLen(slave, argc);
+    for (j = 0;j < argc;j++) {
+      addReplyBulk(slave, argv[j]);
+    }
   }
 }
 
@@ -113,13 +237,6 @@ int cancelReplicationHandshake(void) {
   }
 
   return 1;
-}
-
-// 释放backlog
-void freeReplicationBacklog(void) {
-  redisAssert(listLength(server.slaves) == 0);
-  zfree(server.repl_backlog);
-  server.repl_backlog = NULL;
 }
 
 void replicationSetMaster(char *ip, int port) {
@@ -704,7 +821,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
     sdsfree(err);
   }
 
-  // 接着写这里 执行resync 或者 full-resync
+  // 执行resync 或者 full-resync
   psync_result = slaveTryPartialResynchronization(fd);
 
   if (psync_result == PSYNC_CONTINUE) {
@@ -892,6 +1009,8 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
 }
 
 // 这个函数实在 BGSAVE 完成之后的异步回调函数 它指导该怎么执行和 slave 相关的 RDB 下一步工作
+// master 将遍历 slaves 为每个 repl_state 是 REDIS_REPL_WAIT_BGSAVE_END 的slave
+// 移除原有的写事件处理器 注册新的写事件处理器 sendBulkToSlave
 void updateSlavesWaitingBgsave(int bgsaveerr) {
   listNode *ln;
   int startbgsave = 0;
@@ -943,14 +1062,39 @@ void updateSlavesWaitingBgsave(int bgsaveerr) {
   redisLog(REDIS_NOTICE, "通知slave 领取RDB");
 }
 
+void undoConnectWithMaster(void) {
+  int fd = server.repl_transfer_s;
+  // 连接必须处于正在连接状态
+  redisAssert(server.repl_state == REDIS_REPL_CONNECTING || server.repl_state == REDIS_REPL_RECEIVE_PONG);
+  aeDeleteFileEvent(server.el, fd, AE_READABLE|AE_WRITABLE); // 取消读写事件
+  close(fd);
+  server.repl_transfer_s = -1;
+  server.repl_state = REDIS_REPL_CONNECT;
+  printf("取消连接\n");
+}
+
 void replicationCron(void) {
   if (server.masterhost &&
       (server.repl_state == REDIS_REPL_CONNECTING ||
        server.repl_state == REDIS_REPL_RECEIVE_PONG) &&
       (time(NULL) - server.repl_transfer_lastio) > server.repl_timeout) {
     redisLog(REDIS_WARNING, "Timeout connecting to the MASTER");
-    // TODO 取消连接
-    printf("取消连接\n");
+    undoConnectWithMaster();
+  }
+
+  if (server.masterhost && server.repl_state == REDIS_REPL_TRANSFER &&
+      (time(NULL) - server.repl_transfer_lastio) > server.repl_timeout) {
+    redisLog(REDIS_WARNING, "Timeout receiving bulk data from MASTER...");
+    replicationAbortSyncTransfer(); // 停止传送 并删除
+  }
+
+  /* Timed out master when we are an already connected slave? */
+  // 从服务器曾经连接上主服务器，但现在超时
+  if (server.masterhost && server.repl_state == REDIS_REPL_CONNECTED &&
+      (time(NULL) - server.master->lastinteraction) > server.repl_timeout) {
+    redisLog(REDIS_WARNING, "MASTER timeout: no data nor PING received...");
+    // 释放主服务器
+    freeClient(server.master);
   }
 
   if (server.repl_state == REDIS_REPL_CONNECT) {
@@ -960,4 +1104,15 @@ void replicationCron(void) {
       redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync started");
     }
   }
+
+  // 尝试连接主服务器
+  if (server.repl_state == REDIS_REPL_CONNECT) {
+    redisLog(REDIS_NOTICE, "Connecting to MASTER %s:%d", server.masterhost,
+             server.masterport);
+    if (connectWithMaster() == REDIS_OK) {
+      redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync started");
+    }
+  }
+  // TODO 写到这里了 接下来传播指令到 slave
+
 }

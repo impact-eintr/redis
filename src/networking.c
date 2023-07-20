@@ -822,8 +822,15 @@ void addReplyLongLong(redisClient *c, long long ll) {
     addReplyLongLongWithPrefix(c, ll, ':');
 }
 
-void addReplyMultiBulkLen(redisClient *c, long length);
-void copyClientOutputBuffer(redisClient *dst, redisClient *src);
+void addReplyMultiBulkLen(redisClient *c, long length) {
+  if (length < REDIS_SHARED_BULKHDR_LEN) {
+    addReply(c, shared.mbulkhdr[length]);
+  } else {
+    addReplyLongLongWithPrefix(c, length, '*');
+  }
+}
+
+
 void *dupClientReplyValue(void *o);
 void getClientsMaxBuffers(unsigned long *longest_output_list,
                           unsigned long *biggest_input_buffer);

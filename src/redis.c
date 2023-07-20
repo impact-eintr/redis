@@ -1234,6 +1234,12 @@ int processCommand(redisClient *c) {
 
   // TODO 处理状态异常的服务器 只读服务器 发布订阅模式 载入数据 Lua脚本
 
+  if (server.masterhost && server.repl_slave_ro && !(c->flags & REDIS_MASTER) &&
+      c->cmd->flags & REDIS_CMD_WRITE) {
+    addReply(c, shared.roslaveerr);
+    return REDIS_OK;
+  }
+
   // 执行命令
   if (c->flags & REDIS_MULTI && c->cmd->proc != execCommand &&
       c->cmd->proc != discardCommand && c->cmd->proc != multiCommand &&
