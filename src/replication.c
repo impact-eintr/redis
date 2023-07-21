@@ -206,8 +206,6 @@ void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
   }
 }
 
-
-
 void disconnectSlaves(void) {
   while (listLength(server.slaves)) {
     listNode *ln = listFirst(server.slaves);
@@ -1113,6 +1111,14 @@ void replicationCron(void) {
       redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync started");
     }
   }
+
+  // TODO 定期向主服务器发送 ACK 命令
+  if (server.masterhost && server.master) {
+    printf("TODO 发送ACK\n");
+  }
+
+  // TODO 维护与 slave 的关系
+
   // TODO 写到这里了 接下来传播指令到 slave
 
 }

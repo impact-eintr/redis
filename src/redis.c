@@ -1166,8 +1166,10 @@ int freeMemoryIfNeeded() {
 }
 
 void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc, int flags) {
-  // TODO 传播到 AOF
-
+  // 传播到 AOF
+  if (flags & REDIS_PROPAGATE_AOF) {
+    //feedAppendOnlyFile(cmd, dbid, argv, argc);
+  }
   // 传播到 slave
   if (flags & REDIS_PROPAGATE_REPL) {
     replicationFeedSlaves(server.slaves, dbid, argv, argc);
@@ -1199,6 +1201,28 @@ void call(redisClient *c, int flags) {
       c->cmd->microseconds += duration;
       c->cmd->calls++;
   }
+
+  if (flags & REDIS_CALL_PROPAGATE) { // REDIS_CALL_FULL 包含这个选项
+    int flags = REDIS_PROPAGATE_NONE;
+    if (c->flags & REDIS_FORCE_REPL) {
+      flags |= REDIS_PROPAGATE_REPL;
+    }
+    if (c->flags & REDIS_FORCE_AOF) {
+      flags |= REDIS_PROPAGATE_AOF;
+    }
+    if (dirty) { // 如果数据库被修改
+      flags |= (REDIS_PROPAGATE_REPL | REDIS_PROPAGATE_AOF); // 启用 AOF 与 REPL 传播
+    }
+
+    if (flags != REDIS_PROPAGATE_NONE) {
+      propagate(c->cmd, c->db->id, c->argv, c->argc, flags);
+    }
+  }
+
+  c->flags &= ~(REDIS_FORCE_AOF | REDIS_FORCE_REPL);
+  c->flags |= client_old_flags & (REDIS_FORCE_AOF | REDIS_FORCE_REPL);
+
+  // TODO 传播额外的命令
 
   server.stat_numcommands++;
 }
