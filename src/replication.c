@@ -684,23 +684,26 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
   left = server.repl_transfer_size - server.repl_transfer_read;
   readlen = (left < (signed)sizeof(buf)) ? left : (signed)sizeof(buf);
   nread = read(fd, buf, readlen);
-  if (nread <= 0) {
+  if (nread <= 0)
+  {
     redisLog(REDIS_WARNING, "I/O error trying to sync with MASTER: %s",
              (nread == -1) ? strerror(errno) : "connection lost");
     replicationAbortSyncTransfer();
     return;
-  } else {
-  printf("读取数据 RDB: %ld bytes\n", nread);
+  }
+  else
+  {
+    printf("读取数据 RDB: %ld bytes\n", nread);
   }
 
-  server.repl_transfer_lastio = server.unixtime; // 跟新最后 RDB 产生的IO时间
+  server.repl_transfer_lastio = server.unixtime; // 更新最后 RDB 产生的IO时间
   if (write(server.repl_transfer_fd, buf, nread) != nread) {
     redisLog(REDIS_WARNING, "Write error when slave save local temp rdb file: %s", strerror(errno));
     goto error;
   }
   server.repl_transfer_read += nread;
 
-  // TODO 写到这里了 slave边接受数据边写盘
+  // 写到这里了 slave边接受数据边写盘
   // 定期将读入的文件 fsync 到磁盘，以免 buffer 太多，一下子写入时撑爆 IO
   if (server.repl_transfer_read >=
       server.repl_transfer_last_fsync_off + REPL_MAX_WRITTEN_BEFORE_FSYNC) {
@@ -718,6 +721,8 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
       replicationAbortSyncTransfer();
       return;
     }
+    close(server.repl_transfer_fd);
+
     // 先清空数据库
     redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync: Flushing old date");
     signalFlushedDb(-1);
@@ -844,6 +849,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
   while (maxtries--) { // 打开临时文件保存从主服务器下载的 RDB
     snprintf(tmpfile, 256, "temp-%d.%ld.rdb", (int)server.unixtime,
              (long int)getpid());
+             printf("创建中...\n");
     dfd = open(tmpfile, O_CREAT | O_WRONLY | O_EXCL, 0644);
     if (dfd != -1)
       break;
@@ -858,7 +864,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
   }
 
   // 设置一个读事件处理器
-  if (aeCreateFileEvent(server.el, fd, AE_READABLE, readSyncBulkPayload, NULL)) {
+  if (aeCreateFileEvent(server.el, fd, AE_READABLE, readSyncBulkPayload, NULL) == AE_ERR) {
     redisLog(REDIS_WARNING, "Can't create readable event for SYNC: %s (fd=%d)",
              strerror(errno), fd);
     goto error;

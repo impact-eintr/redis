@@ -824,6 +824,7 @@ void addReplyLongLong(redisClient *c, long long ll) {
 
 void addReplyMultiBulkLen(redisClient *c, long length) {
   if (length < REDIS_SHARED_BULKHDR_LEN) {
+    printf("回复 slave 传播命令的长度\n");
     addReply(c, shared.mbulkhdr[length]);
   } else {
     addReplyLongLongWithPrefix(c, length, '*');
