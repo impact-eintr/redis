@@ -133,7 +133,7 @@ void *zrealloc(void *ptr, size_t size) {
 #endif
 }
 
-#ifdef HAVE_MALLOC_SIZE
+#ifndef HAVE_MALLOC_SIZE
 size_t zmalloc_size(void *ptr) {
   void *realptr = (char *)ptr - PREFIX_SIZE;
   size_t size = *((size_t *)realptr);

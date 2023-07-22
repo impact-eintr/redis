@@ -8,7 +8,6 @@
 #include "zmalloc.h"
 #include "anet.h"
 
-#include <asm-generic/errno-base.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -18,9 +17,10 @@
 
 static void setProtocolError(redisClient *c, int pos);
 
-
 size_t zmalloc_size_sds(sds s) {
+#ifndef HAVE_MALLOC_SIZE
   return zmalloc_size(s-sizeof(struct sdshdr));
+#endif
 }
 
 size_t getStringObjectSdsUsedMemory(robj *o) {

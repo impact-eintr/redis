@@ -12,7 +12,7 @@
 #
 
 #================================================================
-CFLAGS +=-DUSE_TCMALLOC -g -D _GNU_SOURCE
+CFLAGS +=-g -D _GNU_SOURCE
 CC = gcc
 
 CORE = zmalloc.c redis.c db.c ae.c ae_epoll.c
