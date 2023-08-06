@@ -213,6 +213,11 @@ void disconnectSlaves(void) {
   }
 }
 
+
+void replicationCacheMaster(redisClient *c) {
+
+}
+
 void replicationDiscardCachedMaster(void) {
   if (server.cached_master == NULL) {
     return;
@@ -508,6 +513,8 @@ void replicationResurrectCachedMaster(int newfd) {
   server.cached_master = NULL;
   server.master->fd = newfd;
   server.master->flags &= ~(REDIS_CLOSE_AFTER_REPLY | REDIS_CLOSE_ASAP);
+  server.master->authenticated = 1;
+  server.master->lastinteraction = server.unixtime;
 
   server.repl_state = REDIS_REPL_CONNECTED;
   listAddNodeTail(server.clients, server.master);
@@ -721,6 +728,8 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
       replicationAbortSyncTransfer();
       return;
     }
+    // 关闭临时文件
+    zfree(server.repl_transfer_tmpfile);
     close(server.repl_transfer_fd);
 
     // 先清空数据库
@@ -733,7 +742,25 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
       redisLog(REDIS_WARNING, "FAILED trying to load the MASTER synchronization DB from disk");
       return;
     }
+
     redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync RDB finish");
+
+    // 将主服务器设置成一个 redis client
+    // 注意 createClient 会为主服务器绑定事件，为接下来接收命令做好准备
+    server.master = createClient(server.repl_transfer_s);
+    // 标记这个客户端为主服务器
+    server.master->flags |= REDIS_MASTER;
+    // 标记它为已验证身份
+    server.master->authenticated = 1;
+    // 更新复制状态
+    server.repl_state = REDIS_REPL_CONNECTED;
+    // 设置主服务器的复制偏移量
+    server.master->reploff = server.repl_master_initial_offset;
+    // 保存主服务器的 RUN ID
+    memcpy(server.master->replrunid, server.repl_master_runid,
+           sizeof(server.repl_master_runid));
+
+
   }
 
   return;
@@ -1101,17 +1128,9 @@ void replicationCron(void) {
     freeClient(server.master);
   }
 
+  // 请求连接主服务器
   if (server.repl_state == REDIS_REPL_CONNECT) {
     redisLog(REDIS_NOTICE, "Connecting to the MASTER %s:%d", server.masterhost,
-             server.masterport);
-    if (connectWithMaster() == REDIS_OK) {
-      redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync started");
-    }
-  }
-
-  // 尝试连接主服务器
-  if (server.repl_state == REDIS_REPL_CONNECT) {
-    redisLog(REDIS_NOTICE, "Connecting to MASTER %s:%d", server.masterhost,
              server.masterport);
     if (connectWithMaster() == REDIS_OK) {
       redisLog(REDIS_NOTICE, "MASTER <-> SLAVE sync started");
@@ -1126,5 +1145,28 @@ void replicationCron(void) {
   // TODO 维护与 slave 的关系
 
   // TODO 写到这里了 接下来传播指令到 slave
+
+  // 主服务器主动向从服务器发送 PING 探活
+  if (!(server.cronloops % (server.repl_ping_slave_period * server.hz))) {
+    listIter li;
+    listNode *ln;
+    robj *ping_argv[1];
+    ping_argv[0] = createStringObject("PING", 4);
+    replicationFeedSlaves(server.slaves, server.slaveseldb, ping_argv, 1);
+    decrRefCount(ping_argv[0]);
+    printf("发送 PING\n");
+    listRewind(server.slaves,&li);
+    //while((ln = listNext(&li))) {
+    //    redisClient *slave = ln->value;
+
+    //    if (slave->replstate == REDIS_REPL_WAIT_BGSAVE_START ||
+    //        slave->replstate == REDIS_REPL_WAIT_BGSAVE_END) {
+    //        if (write(slave->fd, "\n", 1) == -1) {
+    //            /* Don't worry, it's just a ping. */
+    //        }
+    //    }
+    //}
+  }
+
 
 }

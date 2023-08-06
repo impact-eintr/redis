@@ -918,6 +918,7 @@ void initServerConfig() {
   server.zset_max_ziplist_value = REDIS_ZSET_MAX_ZIPLIST_VALUE;
   server.hll_sparse_max_bytes = REDIS_DEFAULT_HLL_SPARSE_MAX_BYTES;
   server.shutdown_asap = 0;
+  server.repl_ping_slave_period = REDIS_REPL_PING_SLAVE_PERIOD;
   server.repl_timeout = REDIS_REPL_TIMEOUT;
 
 
@@ -1312,7 +1313,10 @@ void closeListeningSockets(int unlink_unix_socket) {
 
 /* ================================ Commands ================================  */
 
-void pingCommand(redisClient *c) { addReply(c, shared.pong); }
+void pingCommand(redisClient *c) { 
+  printf("处理PING\n");
+  addReply(c, shared.pong); 
+}
 
 void echoCommand(redisClient *c) { addReplyBulk(c, c->argv[1]); }
 

@@ -60,6 +60,11 @@ void loadServerConfigFromString(char *config) {
       }
       zfree(server.rdb_filename);
       server.rdb_filename = zstrdup(argv[1]);
+    } else if (!strcasecmp(argv[0],"slaveof") && argc == 3) {
+      slaveof_linenum = linenum;
+      server.masterhost = sdsnew(argv[1]);
+      server.masterport = atoi(argv[2]);
+      server.repl_state = REDIS_REPL_CONNECT;
     }
   }
 

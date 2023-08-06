@@ -405,7 +405,8 @@ typedef struct redisClient
   // 客户端状态标志
   int flags; /* REDIS_SLAVE | REDIS_MONITOR | REDIS_MULTI ... */
 
-  // TODO
+  // 标志认证的状态
+  int authenticated;
 
   // 复制状态
   int replstate; /* replication state if this is a slave */
@@ -692,7 +693,7 @@ struct redisServer
   int aof_last_write_status;      /* REDIS_OK or REDIS_ERR */
   int aof_last_write_errno;       /* Valid if aof_last_write_status is ERR */
 
-/* RDB persistence */
+  /* RDB persistence */
 
   // 自从上次 SAVE 执行以来，数据库被修改的次数
   long long dirty;                /* Changes to DB from the last save */

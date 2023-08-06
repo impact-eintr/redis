@@ -71,6 +71,7 @@ redisClient *createClient(int fd) {
   c->bulklen = -1; // 读入的参数的长度
   c->sentlen = 0; // 已发送的字节数
   c->flags = 0;
+  c->ctime = c->lastinteraction = server.unixtime;
 
   // 回复
   c->reply = listCreate();
@@ -235,8 +236,20 @@ void freeClient(redisClient *c) {
     server.current_client = NULL;
   }
 
-  // TODO 退订所有频道和模式
+  if (server.master && c->flags & REDIS_MASTER)
+  {
+    redisLog(REDIS_WARNING, "Connection with master lost.");
+    if (!(c->flags & (REDIS_CLOSE_AFTER_REPLY |
+                      REDIS_CLOSE_ASAP |
+                      REDIS_BLOCKED |
+                      REDIS_UNBLOCKED)))
+    {
+            replicationCacheMaster(c);
+            return;
+    }
+  }
 
+  // TODO 退订所有频道和模式
 
   // 取消所有读写事件
   if (c->fd != -1) {
@@ -548,7 +561,18 @@ int processInlineBuffer(redisClient *c) {
   return REDIS_OK;
 }
 
+/*
+ * 将 c->querybuf 中的协议内容转换成 c->argv 中的参数对象
+ * 
+ * 比如 *3\r\n$3\r\nSET\r\n$3\r\nMSG\r\n$5\r\nHELLO\r\n
+ * 将被转换为：
+ * argv[0] = SET
+ * argv[1] = MSG
+ * argv[2] = HELLO
+ */
 int processMultibulkBuffer(redisClient *c) {
+  // TODO 处理 MultiCommand
+
   return REDIS_OK;
 }
 
