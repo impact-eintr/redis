@@ -38,6 +38,14 @@ master:clean redis
 redis:
 	$(CC) $(CFLAGS) $(CORE) $(CONFIG) $(DATASTRUCT) $(NETWORK) $(PERSISTENCE) $(REPLICATION) $(OTHER) $(UTILS) -o $@
 
+sds:
+	$(CC) $(CFLAGS) -D SDS zmalloc.c sds.c -o $@
+
+adlist:
+	$(CC) $(CFLAGS) -D ADLIST zmalloc.c sds.c adlist.c  -o $@
+
+dict:
+	$(CC) $(CFLAGS) -D DICT zmalloc.c sds.c adlist.c dict.c -o $@
 
 clean:
-	rm redis -rf
+	rm redis sds adlist dict -rf

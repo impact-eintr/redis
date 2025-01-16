@@ -68,11 +68,12 @@ static void zmalloc_default_oom(size_t size) {
 
 static void (*zmalloc_oom_handler)(size_t) = zmalloc_default_oom;
 
+// 动态分配内存
 void *zmalloc(size_t size) {
-  void *ptr = malloc(size + PREFIX_SIZE);
-  if (!ptr)
+  void *ptr = malloc(size + PREFIX_SIZE); // 长度 + 实际占用内存
+  if (!ptr) // 如果返回NULL 说明申请的内存OOM了
     zmalloc_oom_handler(size);
-#ifdef HAVE_MALLOC_SIZE
+#ifdef HAVE_MALLOC_SIZE // 如果使用第三方的内存管理系统的话需要特殊处理一下  这里我们不做特殊处理 
   // 更新状态
   update_zmalloc_stat_alloc(zmalloc_size(ptr));
   return ptr;
@@ -157,7 +158,7 @@ void zfree(void *ptr) {
   update_zmalloc_stat_free(zmalloc_size(ptr));
   free(ptr);
 #else
-  realptr = (char *)ptr - PREFIX_SIZE;
+  realptr = (char *)ptr - PREFIX_SIZE; // 获取sds实际申请的开启位置
   oldsize = *((size_t *)realptr);
   update_zmalloc_stat_free(oldsize + PREFIX_SIZE); // 更新全局信息
   free(realptr); // 释放内存

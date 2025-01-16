@@ -31,7 +31,7 @@ typedef struct dictEntry {
   struct dictEntry *next;
 } dictEntry;
 
-// 字典接口
+// 字典接口 通过这个结构体 可以实现用户自定义键值行为
 typedef struct dictType {
   // 计算哈希值的函数
   unsigned int (*hashFunction)(const void *key);
@@ -75,10 +75,10 @@ typedef struct dict {
   // 私有数据
   void *privdata;
 
-  // 哈希表
+  // 哈希表 一个主表  一个备表 是两个二维数组
   dictht ht[2];
 
-  // rehash 索引 不进行rehash时 = -1
+  // rehash 索引 不进行rehash时 = -1  0 表示开始rehash
   int rehashidx;
 
   // 目前正在运行的安全迭代器的数量

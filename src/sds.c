@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <ctype.h>
 
+// 构造函数
 sds sdsnewlen(const void *init, size_t initlen)
 {
   struct sdshdr *sh;
@@ -53,6 +54,7 @@ sds sdsempty(void)
   return sdsnewlen("", 0);
 }
 
+// 用原生字符串构造sds
 sds sdsnew(const char *init)
 {
   size_t initlen = (init == NULL) ? 0 : strlen(init);
@@ -219,6 +221,7 @@ sds sdscatsds(sds s, const sds t)
 // 复制指定长度 用t的指定长度覆盖s
 sds sdscpylen(sds s, const char *t, size_t len)
 {
+  // 获取sds的header地址
   struct sdshdr *sh = (void *)(s - (sizeof(struct sdshdr)));
 
   // sds 现有 buf 的长度
@@ -366,7 +369,7 @@ sds sdscatvprintf(sds s, const char *fmt, va_list ap)
 }
 
 // 打印任意数量个字符串，并将这些字符串追加到给定 sds 的末尾
-sds sdscatprintf(sds s, const char *fmt, ...) 
+sds sdscatprintf(sds s, const char *fmt, ...)
 {
   va_list ap;
   char *t;
@@ -571,15 +574,16 @@ void sdsrange(sds s, int start, int end)
   sh->len = newlen;
 }
 
-void sdsupdatelen(sds s) {
-  struct sdshdr *sh = (void *) (s-(sizeof(struct sdshdr)));
+void sdsupdatelen(sds s)
+{
+  struct sdshdr *sh = (void *)(s - (sizeof(struct sdshdr)));
   int reallen = strlen(s);
-  sh->free += (sh->len-reallen);
+  sh->free += (sh->len - reallen);
   sh->len = reallen;
 }
 
 // 相同返回 0 s1大返回正数  s2大返回负数
-int sdscmp(const sds s1, const sds s2) 
+int sdscmp(const sds s1, const sds s2)
 {
   size_t l1, l2, minlen;
   int cmp;
@@ -734,31 +738,57 @@ sds sdscatrepr(sds s, const char *p, size_t len)
   return sdscatlen(s, "\"", 1);
 }
 
-int is_hex_digit(char c) {
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-           (c >= 'A' && c <= 'F');
+int is_hex_digit(char c)
+{
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+         (c >= 'A' && c <= 'F');
 }
 
-int hex_digit_to_int(char c) {
-    switch(c) {
-    case '0': return 0;
-    case '1': return 1;
-    case '2': return 2;
-    case '3': return 3;
-    case '4': return 4;
-    case '5': return 5;
-    case '6': return 6;
-    case '7': return 7;
-    case '8': return 8;
-    case '9': return 9;
-    case 'a': case 'A': return 10;
-    case 'b': case 'B': return 11;
-    case 'c': case 'C': return 12;
-    case 'd': case 'D': return 13;
-    case 'e': case 'E': return 14;
-    case 'f': case 'F': return 15;
-    default: return 0;
-    }
+int hex_digit_to_int(char c)
+{
+  switch (c)
+  {
+  case '0':
+    return 0;
+  case '1':
+    return 1;
+  case '2':
+    return 2;
+  case '3':
+    return 3;
+  case '4':
+    return 4;
+  case '5':
+    return 5;
+  case '6':
+    return 6;
+  case '7':
+    return 7;
+  case '8':
+    return 8;
+  case '9':
+    return 9;
+  case 'a':
+  case 'A':
+    return 10;
+  case 'b':
+  case 'B':
+    return 11;
+  case 'c':
+  case 'C':
+    return 12;
+  case 'd':
+  case 'D':
+    return 13;
+  case 'e':
+  case 'E':
+    return 14;
+  case 'f':
+  case 'F':
+    return 15;
+  default:
+    return 0;
+  }
 }
 
 /* Split a line into arguments, where every argument can be in the
@@ -1020,8 +1050,10 @@ sds sdsjoin(char **argv, int argc, char *sep)
   return join;
 }
 
-#if 0
-int main(void) {
+
+#ifdef SDS
+int main(void)
+{
   {
     struct sdshdr *sh;
     sds x = sdsnew("foo"), y;
@@ -1032,24 +1064,24 @@ int main(void) {
     test_cond("Create a string with specified length",
               sdslen(x) == 2 && memcmp(x, "fo\0", 3) == 0)
 
-        x = sdscat(x, "bar");
+    x = sdscat(x, "bar");
     test_cond("Strings concatenation",
               sdslen(x) == 5 && memcmp(x, "fobar\0", 6) == 0);
 
     x = sdscpy(x, "a");
     test_cond("sdscpy() against an originally longer string",
               sdslen(x) == 1 && memcmp(x, "a\0", 2) == 0) x =
-        sdscpy(x, "xyzxxxxxxxxxxyyyyyyyyyykkkkkkkkkk");
+    sdscpy(x, "xyzxxxxxxxxxxyyyyyyyyyykkkkkkkkkk");
     test_cond("sdscpy() against an originally shorter string",
               sdslen(x) == 33 &&
                   memcmp(x, "xyzxxxxxxxxxxyyyyyyyyyykkkkkkkkkk\0", 33) == 0)
 
-        sdsfree(x);
+    sdsfree(x);
     x = sdscatprintf(sdsempty(), "%d", 123);
     test_cond("sdscatprintf() seems working in the base case",
               sdslen(x) == 3 && memcmp(x, "123\0", 4) == 0)
 
-        sdsfree(x);
+    sdsfree(x);
   }
 }
 #endif

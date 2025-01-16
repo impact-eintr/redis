@@ -17,6 +17,7 @@ struct sdshdr {
   char buf[]; // 数据空间
 };
 
+// 获取 sds 长度 字符串长度不是sds的真实长度
 static inline size_t sdslen(const sds s) {
   struct sdshdr *sh = (void *)(s - (sizeof(struct sdshdr)));
   return sh->len;
