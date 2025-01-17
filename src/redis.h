@@ -270,7 +270,20 @@ typedef struct redisObject {
 
 #define LRU_CLOCK() ((1000/server.hz <= REDIS_LRU_CLOCK_RESOLUTION) ? server.lruclock : getLRUClock())
 
-// 跳表节点
+/*跳表节点
+
+1                {h|obj*|score|backward*|level[...]}
+                 |
+2 {h|obj*|score|backward*|level[(forward*|span, (forward*|span), (forward*|span),...]}  这是头指针
+                                   |                |                |               |
+      这里是本层的成员                {skiplist}       {skiplist}       {h|obj*|score|backward*|level[...]}   
+                                   |                |                |
+3                                  {skiplist}       {skiplist}       |
+                                   |                |                |
+4                                  {skiplist}       {skiplist}       {skiplist}
+                                   |                |                |
+                                   null             null             null
+*/ 
 typedef struct zskiplistNode {
   unsigned int h; // 本节点高度
   // 成员对象
@@ -912,6 +925,7 @@ typedef struct {
 } zlexrangespec;
 
 
+// 跳表API
 zskiplist *zslCreate(void);
 void zslFree(zskiplist *zsl);
 zskiplistNode *zslInsert(zskiplist *zsl, double score, robj *obj);

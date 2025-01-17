@@ -47,5 +47,8 @@ adlist:
 dict:
 	$(CC) $(CFLAGS) -D DICT zmalloc.c sds.c adlist.c dict.c -o $@
 
+skiplist:
+	$(CC) $(CFLAGS) -D SKIPLIST zmalloc.c sds.c adlist.c dict.c skiplist.c -o $@
+
 clean:
-	rm redis sds adlist dict -rf
+	rm redis sds adlist dict skiplist -rf

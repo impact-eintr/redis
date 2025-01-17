@@ -1120,7 +1120,7 @@ void ziplistRepr(unsigned char *zl)
   printf("{end}\n\n");
 }
 
-#if 0
+#ifdef ZIPLIST
 #include <sys/time.h>
 #include "adlist.h"
 #include "sds.h"

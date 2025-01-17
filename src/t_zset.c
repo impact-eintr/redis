@@ -41,7 +41,7 @@ zskiplistNode *zslCreateNode(int level, double score, robj *obj) {
   return zn;
 }
 
-// 创建并返回一个新的跳表
+// 创建并返回一个新的跳表 只有一个节点
 zskiplist *zslCreate(void) {
   int j;
   zskiplist *zsl;
@@ -463,7 +463,7 @@ zskiplistNode *zslGetElementByRank(zskiplist *zsl, unsigned long rank) {
   return NULL;
 }
 
-#if 0
+
 
 void printSkl(zskiplist *zsl) {
   printf("[lvl:%d|header|len:%3ld|tail]\n\n", zsl->level, zsl->length);
@@ -516,5 +516,5 @@ int main(int argc, char **argv) {
   //x = zslGetElementByRank(zsl, 18);
   //printf("%d\n", (int)x->score);
 }
-
+#ifdef SKIPLIST
 #endif
