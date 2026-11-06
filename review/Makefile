@@ -16,21 +16,31 @@
 #   make help               显示帮助
 #
 #   新增模块：在 MODULES 里加名字，并补一条 SRCS_<模块> 即可。
+#             多个源文件写成 "a.c b.c"，第一个是入口文件（含 main），
+#             其余文件作为库一起链接（它们自带的 demo main 会自动改名）。
+#
+#   生成物：build/<模块>、build/<模块>.asan，目标文件在 build/obj/<模块>/ 下。
 #================================================================
 
 MODULES        := zmalloc sds adlist
-DEFAULT_MODULE := redis
+DEFAULT_MODULE := zmalloc
 
 # 从 make 的目标列表里挑出模块名（支持 make build sds / make sds build）
 REQ_MODULE := $(filter $(MODULES),$(MAKECMDGOALS))
 MODULE     ?= $(if $(REQ_MODULE),$(lastword $(REQ_MODULE)),$(DEFAULT_MODULE))
 
-# 每个模块的源文件。需要多个文件就写成 "a.c b.c"
+# 每个模块的源文件。需要多个文件就写成 "a.c b.c"。
+# 列表里第一个是「入口文件」，它的 main 才是这个程序的 main；
+# 靠后的源文件只作为库一起链接，它们自带的 demo main 会被改名（见 stub_main）。
 SRCS_zmalloc := zmalloc.c
-SRCS_sds     := sds.c
+SRCS_sds     := sds.c zmalloc.c
 SRCS_adlist  := adlist.c
 
-SRCS := $(SRCS_$(MODULE))
+SRCS     := $(SRCS_$(MODULE))
+MAIN_SRC := $(firstword $(SRCS))
+
+# 非入口文件里的 main 改个名，否则 sds + zmalloc 链接会 multiple definition of `main`
+stub_main = $(if $(filter-out $(MAIN_SRC),$(1)),-Dmain=__demo_main_$(basename $(notdir $(1))))
 
 # 未定义的目标直接报错，免得 make build sdz 静默去编 zmalloc
 KNOWN_GOALS := all build run debug asan rebuild clean help $(MODULES)
@@ -46,10 +56,15 @@ LDFLAGS ?=
 LDLIBS  += -pthread
 
 BUILD_DIR := build
+# 目标文件按模块分目录：zmalloc 作为 sds 的依赖时 main 会被改名，
+# 和 zmalloc 模块自己要用的 zmalloc.o 不能共用同一个文件
+OBJ_DIR   := $(BUILD_DIR)/obj/$(MODULE)
 BIN       := $(BUILD_DIR)/$(MODULE)
 ASAN_BIN  := $(BUILD_DIR)/$(MODULE).asan
-OBJS      := $(SRCS:%.c=$(BUILD_DIR)/%.o)
+OBJS      := $(SRCS:%.c=$(OBJ_DIR)/%.o)
 DEPS      := $(OBJS:.o=.d)
+ASAN_OBJS := $(SRCS:%.c=$(OBJ_DIR)/%.asan.o)
+ASAN_DEPS := $(ASAN_OBJS:.o=.d)
 
 .PHONY: all build run debug asan rebuild clean help guard $(MODULES)
 
@@ -71,16 +86,23 @@ $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) $(LDLIBS) -o $@
 
 # -MMD -MP 自动生成头文件依赖：改 sds.h / zmalloc.h 都会触发重编
-$(BUILD_DIR)/%.o: %.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+$(OBJ_DIR)/%.o: %.c
+	@mkdir -p $(OBJ_DIR)
+	$(CC) $(CFLAGS) $(call stub_main,$<) -MMD -MP -c $< -o $@
 
--include $(DEPS)
+$(OBJ_DIR)/%.asan.o: %.c
+	@mkdir -p $(OBJ_DIR)
+	$(CC) $(CFLAGS) -fsanitize=address -fno-omit-frame-pointer $(call stub_main,$<) -MMD -MP -c $< -o $@
+
+-include $(DEPS) $(ASAN_DEPS)
 
 # 源文件为空时给一句人话，而不是让 ld 报 undefined reference to main
 guard:
 	@if [ -z "$(strip $(SRCS))" ]; then \
 		echo "错误: 模块 '$(MODULE)' 没有源文件（检查 SRCS_$(MODULE)）"; exit 1; \
+	fi
+	@if [ ! -f "$(firstword $(SRCS))" ]; then \
+		echo "错误: $(firstword $(SRCS)) 不存在，$(MODULE) 还没有实现内容"; exit 1; \
 	fi
 	@if [ ! -s "$(firstword $(SRCS))" ]; then \
 		echo "错误: $(firstword $(SRCS)) 是空文件，$(MODULE) 还没有实现内容"; exit 1; \
@@ -93,9 +115,8 @@ run: $(BIN)
 debug: $(BIN)
 	gdb -q ./$(BIN)
 
-asan: guard
-	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -fsanitize=address -fno-omit-frame-pointer $(SRCS) $(LDFLAGS) $(LDLIBS) -o $(ASAN_BIN)
+asan: guard $(ASAN_OBJS)
+	$(CC) $(CFLAGS) -fsanitize=address -fno-omit-frame-pointer $(ASAN_OBJS) $(LDFLAGS) $(LDLIBS) -o $(ASAN_BIN)
 	@echo "--- run $(MODULE).asan ---"
 	@./$(ASAN_BIN)
 
@@ -108,7 +129,7 @@ clean:
 	rm -rf $(BUILD_DIR)
 else
 clean:
-	rm -f $(BIN) $(ASAN_BIN) $(OBJS) $(DEPS)
+	rm -rf $(BIN) $(ASAN_BIN) $(OBJ_DIR)
 endif
 
 help:

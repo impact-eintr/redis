@@ -15,16 +15,29 @@ struct sdshdr
     char buf[];
 };
 
+/* 由 sds（即 sh->buf）反推回所属的 sdshdr 头指针 */
+#define SDS_HDR(s) ((struct sdshdr *)((s) - sizeof(struct sdshdr)))
+
 static inline size_t sdslen(const sds s)
 {
-    struct sdshdr *sh = (void *)(s - sizeof(struct sdshdr));
-    return sh->len;
+    return SDS_HDR(s)->len;
 }
 
 static inline size_t sdsavail(const sds s)
 {
-    struct sdshdr *sh = (void *)(s - sizeof(struct sdshdr));
-    return sh->free;
+    return SDS_HDR(s)->free;
 }
+
+sds sdsnew(const char* init);
+sds sdsnewlen(const void* init, size_t initlen);
+sds sdsempty(void);
+sds sdsdup(const sds s);
+void sdsfree(sds s);
+sds sdsgrowzero(sds s, size_t len);
+sds sdscatlen(sds s, const void* t, size_t len);
+sds sdscat(sds s, const char* t);
+sds sdscatsds(sds s, const sds t);
+sds sdscpylen(sds s, const char* t, size_t len);
+sds sdscpy(sds s, const char* t);
 
 #endif

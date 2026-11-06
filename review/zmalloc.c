@@ -156,7 +156,7 @@ size_t zmalloc_used_memory(void) {
 }
 
 
-int main(int argc, char** argv) {
+int main() {
     char *s = "hello eintr!";
     char *ns = zstrdup(s);
     size_t size = zmalloc_used_memory();
@@ -164,4 +164,5 @@ int main(int argc, char** argv) {
     printf("%s used %lu\n", ns, size);
 
     zfree(ns);
+    return 0;
 }
